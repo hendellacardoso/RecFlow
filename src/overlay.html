@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>GT Overlay</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; user-select: none; }
+    /* alfa mínimo no modo desenho para a janela receber os cliques */
+    body.drawing { background: rgba(0, 0, 0, 0.01); cursor: crosshair; }
+    canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+    #view { pointer-events: auto; }
+    /* Teclas pressionadas */
+    #keys { position: fixed; display: flex; flex-direction: column; gap: 8px; pointer-events: none; z-index: 5; }
+    #keys.s { font-size: 15px; } #keys.m { font-size: 21px; } #keys.l { font-size: 30px; }
+    .kc {
+      display: flex; align-items: center; gap: .3em; padding: .35em .5em; border-radius: .55em;
+      background: rgba(20, 22, 27, .86); color: #fff; font-family: "Segoe UI", sans-serif; font-weight: 600;
+      box-shadow: 0 .2em .8em rgba(0, 0, 0, .35); transition: opacity .35s, transform .2s; white-space: pre;
+    }
+    .kc.out { opacity: 0; transform: translateY(.3em); }
+    .kc kbd {
+      font: inherit; padding: .1em .45em; border-radius: .3em; background: rgba(255, 255, 255, .14);
+      border-bottom: .12em solid rgba(255, 255, 255, .28);
+    }
+    .kc .plus { opacity: .6; font-weight: 400; }
+    .kc .typed { padding: 0 .2em; letter-spacing: .02em; }
+    .kc .count { opacity: .7; font-size: .8em; margin-left: .2em; }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <canvas id="fx"></canvas>
+  <div id="keys"></div>
+  <script src="overlay.js"></script>
+</body>
+</html>

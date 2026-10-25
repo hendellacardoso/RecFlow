@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; media-src 'self' blob: mediastream:; style-src 'self' 'unsafe-inline'; script-src 'self' gt: 'wasm-unsafe-eval'; connect-src 'self' gt:; worker-src 'self' blob: gt:">
+  <title>GT Webcam</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; user-select: none; font: 12px "Segoe UI", sans-serif; }
+    #wrap {
+      position: absolute; inset: 3px; overflow: hidden; background: #111; cursor: grab;
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, .92), 0 4px 14px rgba(0, 0, 0, .45);
+    }
+    #wrap.dragging { cursor: grabbing; }
+    body.circle #wrap { border-radius: 50%; }
+    body.rect #wrap { border-radius: 12px; }
+    video, canvas { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+    canvas { position: absolute; inset: 0; }
+    body.mirror video, body.mirror canvas { transform: scaleX(-1); }
+    #msg { position: absolute; inset: 0; display: grid; place-items: center; color: #ddd; text-align: center; padding: 12px; pointer-events: none; }
+    /* controles só aparecem com o mouse em cima */
+    .ctl { position: absolute; opacity: 0; transition: opacity .15s; }
+    body:hover .ctl { opacity: 1; }
+    #resize {
+      right: 2px; bottom: 2px; width: 20px; height: 20px; border-radius: 50%;
+      background: rgba(255, 255, 255, .95); box-shadow: 0 1px 4px rgba(0, 0, 0, .5); cursor: nwse-resize;
+    }
+    #resize::after { content: ''; position: absolute; inset: 6px; border-right: 2px solid #333; border-bottom: 2px solid #333; }
+    #close {
+      right: 2px; top: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 0;
+      background: rgba(0, 0, 0, .7); color: #fff; cursor: pointer; font-size: 13px; line-height: 20px;
+    }
+    #close:hover { background: #ff3b30; }
+  </style>
+</head>
+<body class="circle">
+  <div id="wrap">
+    <video id="v" muted playsinline></video>
+    <canvas id="cv" hidden></canvas>
+    <div id="msg">Abrindo webcam…</div>
+  </div>
+  <div id="resize" class="ctl" title="Arraste para redimensionar"></div>
+  <button id="close" class="ctl" title="Ocultar webcam">✕</button>
+  <script src="blur.js"></script>
+  <script src="cam.js"></script>
+</body>
+</html>

@@ -1,0 +1,1117 @@
+'use strict';
+const {
+  app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut,
+  shell, dialog, Tray, Menu, nativeImage, nativeTheme, systemPreferences, protocol, net
+} = require('electron');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const { spawn } = require('child_process');
+const { pathToFileURL } = require('url');
+
+// FFmpeg embutido (usado para finalizar gravações e exportar o vídeo editado)
+let ffmpegPath = null;
+try {
+  ffmpegPath = require('ffmpeg-static');
+  if (ffmpegPath) ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+  if (!ffmpegPath || !fs.existsSync(ffmpegPath)) ffmpegPath = null;
+} catch { ffmpegPath = null; }
+
+// Hook global de mouse (opcional) para os efeitos de clique
+let uIOhook = null, UiohookKey = {};
+try { ({ uIOhook, UiohookKey } = require('uiohook-napi')); } catch { uIOhook = null; }
+const KEY_NAMES = {};
+for (const [name, code] of Object.entries(UiohookKey || {})) if (!(code in KEY_NAMES)) KEY_NAMES[code] = name;
+
+// Protocolo interno gt://app/... para carregar modelos de IA, WebAssembly e worklets
+// (o fetch() do Chromium não lê arquivos file://)
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'gt', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
+]);
+const PROJECT_EXT = '.gtproj';
+
+const ICON = path.join(__dirname, 'assets', 'icon.png');
+const TRAY_ICON = path.join(__dirname, 'assets', process.platform === 'win32' ? 'icon.ico' : 'tray.png');
+const PRELOAD = path.join(__dirname, 'preload.js');
+const APP_TITLE = 'RecFlow';
+// Links permitidos na tela Sobre
+const ABOUT_LINKS = ['mailto:suporte@api2dev.com.br', 'https://wa.me/5562993148955', 'https://api2dev.com.br'];
+
+let camWin = null, camDrag = null, camSaveTimer = null;
+let mainWin = null, overlayWin = null, toolbarWin = null, borderWin = null, tray = null;
+let selectorWins = [];
+let settings = null;
+let failedHotkeys = [];
+let drawing = false;
+let drawOpts = { tool: 'pen', color: '#ff3b30', width: 4 };
+let hookRunning = false;
+let pendingQuit = false;
+const rec = { active: false, paused: false, stream: null, file: null, displayId: null };
+
+/* ------------------------------------------------------------------ */
+/* Configurações                                                        */
+/* ------------------------------------------------------------------ */
+function defaults() {
+  return {
+    outputDir: path.join(app.getPath('videos'), 'RecFlow'),
+    format: 'mp4', fps: 30, bitrate: 8,
+    mode: 'screen', displayId: null, windowId: null, windowName: '', region: null,
+    systemAudio: true, systemVolume: 100, mic: false, micDeviceId: '', micVolume: 100,
+    webcam: false, webcamDeviceId: '', webcamPos: 'br', webcamSize: 22, webcamShape: 'circle', webcamMirror: false,
+    webcamWidth: 260, webcamBounds: null, theme: 'system', openEditor: true,
+    webcamBlur: false, webcamBlurStrength: 14, micNoise: 'standard',
+    countdown: 3,
+    keysShow: false, keysPos: 'bc', keysSize: 'm', keysCombosOnly: false, keysDuration: 1.5,
+    wmEnabled: false, wmPath: '', wmPos: 'br', wmSize: 14, wmOpacity: 80,
+    clickEffects: true, hideApp: true, showBorder: true, minimizeOnRecord: false,
+    hotkeys: { record: 'F12', pause: 'Shift+F12', screenshot: 'F11', draw: 'Ctrl+Shift+D', clear: 'Ctrl+Shift+X', webcam: 'Ctrl+Shift+W' },
+    schedules: []
+  };
+}
+const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
+
+function loadSettings() {
+  const d = defaults();
+  try {
+    // migra as configurações da versão anterior (quando o app se chamava "Gravador de Tela")
+    const old = path.join(app.getPath('appData'), 'gravador-tela', 'settings.json');
+    if (!fs.existsSync(settingsPath()) && fs.existsSync(old)) {
+      fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+      fs.copyFileSync(old, settingsPath());
+    }
+  } catch { /* ignora */ }
+  try {
+    const s = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
+    return { ...d, ...s, hotkeys: { ...d.hotkeys, ...(s.hotkeys || {}) } };
+  } catch { return d; }
+}
+function saveSettings() {
+  try {
+    fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+    fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
+  } catch (e) { console.error('Falha ao salvar configurações', e); }
+}
+function ensureOutputDir() { fs.mkdirSync(settings.outputDir, { recursive: true }); }
+function insideOutput(p) {
+  const base = path.resolve(settings.outputDir) + path.sep;
+  return path.resolve(p).startsWith(base);
+}
+function stamp() {
+  const d = new Date(); const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+function getDisplay(id) {
+  return screen.getAllDisplays().find((d) => String(d.id) === String(id)) || screen.getPrimaryDisplay();
+}
+function cursorDisplayId() {
+  return String(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id);
+}
+function accentColor() {
+  try {
+    const c = systemPreferences.getAccentColor && systemPreferences.getAccentColor();
+    if (c && /^[0-9a-f]{6}/i.test(c)) return `#${c.slice(0, 6)}`;
+  } catch { /* sem cor de destaque */ }
+  return null;
+}
+function send(ch, ...a) { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send(ch, ...a); }
+function alive(w) { return w && !w.isDestroyed(); }
+function webPrefs(extra = {}) {
+  return { preload: PRELOAD, contextIsolation: true, nodeIntegration: false, ...extra };
+}
+
+/* ------------------------------------------------------------------ */
+/* Janela principal e bandeja                                           */
+/* ------------------------------------------------------------------ */
+function createMainWindow() {
+  mainWin = new BrowserWindow({
+    width: 1120, height: 740, minWidth: 960, minHeight: 620,
+    backgroundColor: '#14161b', icon: ICON, title: APP_TITLE, autoHideMenuBar: true, show: false,
+    webPreferences: webPrefs({ backgroundThrottling: false })
+  });
+  mainWin.setMenu(null);
+  mainWin.loadFile(path.join(__dirname, 'src', 'index.html'));
+  mainWin.once('ready-to-show', () => mainWin.show());
+  mainWin.setContentProtection(!!settings.hideApp);
+  mainWin.on('close', (e) => {
+    // Fechar durante a gravação apenas esconde na bandeja
+    if (rec.active && !app.isQuitting) { e.preventDefault(); mainWin.hide(); }
+  });
+  mainWin.on('closed', () => { mainWin = null; app.quit(); });
+}
+
+function createTray() {
+  const trayImg = nativeImage.createFromPath(TRAY_ICON);
+  tray = new Tray(process.platform === 'win32' ? trayImg : trayImg.resize({ width: 16, height: 16 }));
+  tray.on('click', () => { if (mainWin) { mainWin.show(); mainWin.focus(); } });
+  updateTray();
+}
+function updateTray() {
+  if (!tray) return;
+  tray.setToolTip(rec.active ? (rec.paused ? 'Gravação pausada' : 'Gravando…') : APP_TITLE);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: rec.active ? 'Parar gravação' : 'Iniciar gravação', click: () => send('hotkey', 'record') },
+    { label: rec.paused ? 'Retomar' : 'Pausar', enabled: rec.active, click: () => send('hotkey', 'pause') },
+    { label: 'Capturar imagem', click: () => takeScreenshot() },
+    { label: drawing ? 'Fechar desenho' : 'Desenhar na tela', click: () => setDrawing(!drawing) },
+    { type: 'separator' },
+    { label: 'Sobre o RecFlow', click: () => { if (mainWin) { mainWin.show(); mainWin.focus(); send('show-panel', 'about'); } } },
+    { label: 'Mostrar janela', click: () => { if (mainWin) { mainWin.show(); mainWin.focus(); } } },
+    { label: 'Sair', click: () => { app.isQuitting = true; app.quit(); } }
+  ]));
+}
+
+/* ------------------------------------------------------------------ */
+/* Atalhos globais                                                      */
+/* ------------------------------------------------------------------ */
+function registerHotkeys() {
+  globalShortcut.unregisterAll();
+  const actions = {
+    record: () => send('hotkey', 'record'),
+    pause: () => send('hotkey', 'pause'),
+    screenshot: () => takeScreenshot(),
+    draw: () => setDrawing(!drawing),
+    clear: () => { if (alive(overlayWin)) overlayWin.webContents.send('draw:clear'); },
+    webcam: () => {
+      settings.webcam = !settings.webcam; saveSettings(); syncCamWindow();
+      send('settings:changed', settings);
+    }
+  };
+  const failed = [];
+  for (const [key, fn] of Object.entries(actions)) {
+    const acc = settings.hotkeys[key];
+    if (!acc) continue;
+    try { if (!globalShortcut.register(acc, fn)) failed.push(acc); } catch { failed.push(acc); }
+  }
+  failedHotkeys = failed;
+  return failed;
+}
+
+/* ------------------------------------------------------------------ */
+/* Seleção de área                                                      */
+/* ------------------------------------------------------------------ */
+function closeSelectors() {
+  selectorWins.forEach((w) => { if (alive(w)) w.close(); });
+  selectorWins = [];
+}
+
+// Abre um seletor em CADA monitor; a área fica no monitor onde o usuário arrastar
+function selectRegion() {
+  return new Promise((resolve) => {
+    closeSelectors();
+    const wasVisible = alive(mainWin) && mainWin.isVisible() && !mainWin.isMinimized();
+    if (wasVisible) mainWin.minimize();
+
+    const cursorId = cursorDisplayId();
+    const byContents = new Map(); // webContents.id -> { win, display }
+    let done = false;
+
+    const finish = (r, d) => {
+      if (done) return; done = true;
+      ipcMain.removeListener('region:result', onResult);
+      ipcMain.removeListener('region:start', onStart);
+      closeSelectors();
+      if (r && d && r.w >= 16 && r.h >= 16) {
+        settings.region = { x: r.x, y: r.y, w: r.w, h: r.h, displayId: String(d.id) };
+        settings.mode = 'area';
+        saveSettings();
+        syncCamWindow();
+        if (alive(camWin) && !camInsideTarget()) placeCam('br');
+      }
+      if (wasVisible && alive(mainWin)) mainWin.restore();
+      resolve(r && d ? settings.region : null);
+    };
+    const onResult = (ev, r) => {
+      const e = byContents.get(ev.sender.id);
+      if (e) finish(r, e.display);
+    };
+    // Ao começar a arrastar num monitor, limpa a seleção dos outros
+    const onStart = (ev) => {
+      for (const [id, e] of byContents) {
+        if (id !== ev.sender.id && alive(e.win)) e.win.webContents.send('region:reset');
+      }
+    };
+    ipcMain.on('region:result', onResult);
+    ipcMain.on('region:start', onStart);
+
+    for (const d of screen.getAllDisplays()) {
+      const win = new BrowserWindow({
+        ...d.bounds, frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true,
+        resizable: false, movable: false, fullscreenable: false, hasShadow: false, show: false,
+        title: 'GT Selecao', webPreferences: webPrefs()
+      });
+      byContents.set(win.webContents.id, { win, display: d });
+      selectorWins.push(win);
+      win.setAlwaysOnTop(true, 'screen-saver');
+      win.setContentProtection(true);
+      win.loadFile(path.join(__dirname, 'src', 'selector.html'));
+      win.once('ready-to-show', () => {
+        if (!alive(win)) return;
+        win.setBounds(d.bounds); // reaplica: corrige posição em monitores com escalas diferentes
+        win.show();
+        if (String(d.id) === cursorId) win.focus();
+      });
+      win.on('closed', () => finish(null, null));
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Overlay (desenho + efeitos de clique), barra de ferramentas e borda  */
+/* ------------------------------------------------------------------ */
+function ensureOverlay(displayId) {
+  if (alive(overlayWin)) return overlayWin;
+  const d = getDisplay(displayId);
+  overlayWin = new BrowserWindow({
+    ...d.bounds, frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true,
+    resizable: false, movable: false, focusable: true, hasShadow: false, show: false,
+    fullscreenable: false, title: 'GT Overlay', webPreferences: webPrefs({ backgroundThrottling: false })
+  });
+  overlayWin.setAlwaysOnTop(true, 'screen-saver');
+  overlayWin.setIgnoreMouseEvents(!drawing);
+  overlayWin.loadFile(path.join(__dirname, 'src', 'overlay.html'));
+  overlayWin.once('ready-to-show', () => {
+    if (!alive(overlayWin)) return;
+    overlayWin.setBounds(d.bounds);
+    overlayWin.showInactive();
+    applyOverlayState();
+  });
+  overlayWin.on('closed', () => { overlayWin = null; });
+  return overlayWin;
+}
+function applyOverlayState() {
+  if (!alive(overlayWin)) return;
+  overlayWin.setIgnoreMouseEvents(!drawing);
+  overlayWin.webContents.send('draw:mode', drawing);
+  if (drawing) {
+    overlayWin.focus();
+    if (alive(toolbarWin)) toolbarWin.moveTop();
+  }
+}
+function closeOverlay() { if (alive(overlayWin)) overlayWin.close(); overlayWin = null; }
+
+function showToolbar(displayId) {
+  if (alive(toolbarWin)) { toolbarWin.showInactive(); toolbarWin.moveTop(); return; }
+  const d = getDisplay(displayId);
+  const w = 740, h = 56;
+  toolbarWin = new BrowserWindow({
+    x: Math.round(d.bounds.x + (d.bounds.width - w) / 2), y: d.bounds.y + 14, width: w, height: h,
+    frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, resizable: false,
+    hasShadow: false, show: false, fullscreenable: false, title: 'GT Ferramentas', webPreferences: webPrefs()
+  });
+  toolbarWin.setAlwaysOnTop(true, 'screen-saver', 1);
+  toolbarWin.setContentProtection(true); // a barra não aparece no vídeo
+  toolbarWin.loadFile(path.join(__dirname, 'src', 'toolbar.html'));
+  toolbarWin.once('ready-to-show', () => { if (alive(toolbarWin)) { toolbarWin.showInactive(); toolbarWin.moveTop(); } });
+  toolbarWin.on('closed', () => { toolbarWin = null; });
+}
+function closeToolbar() { if (alive(toolbarWin)) toolbarWin.close(); toolbarWin = null; }
+
+function setDrawing(on) {
+  drawing = !!on;
+  if (drawing) {
+    const disp = rec.active && rec.displayId ? rec.displayId : cursorDisplayId();
+    const existed = alive(overlayWin);
+    ensureOverlay(disp);
+    showToolbar(disp);
+    if (existed) applyOverlayState();
+  } else {
+    closeToolbar();
+    if (rec.active && settings.mode !== 'window' && settings.mode !== 'webcam') applyOverlayState();
+    else closeOverlay();
+  }
+  send('draw:state', drawing);
+  updateTray();
+}
+
+function showBorder() {
+  const r = settings.region; if (!r) return;
+  const d = getDisplay(r.displayId); const p = 3;
+  borderWin = new BrowserWindow({
+    x: d.bounds.x + r.x - p, y: d.bounds.y + r.y - p, width: r.w + p * 2, height: r.h + p * 2,
+    frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, focusable: false,
+    resizable: false, movable: false, hasShadow: false, show: false, title: 'GT Borda', webPreferences: webPrefs()
+  });
+  borderWin.setIgnoreMouseEvents(true);
+  borderWin.setAlwaysOnTop(true, 'screen-saver');
+  borderWin.setContentProtection(true);
+  borderWin.loadFile(path.join(__dirname, 'src', 'border.html'));
+  borderWin.once('ready-to-show', () => alive(borderWin) && borderWin.showInactive());
+  borderWin.on('closed', () => { borderWin = null; });
+}
+function closeBorder() { if (alive(borderWin)) borderWin.close(); borderWin = null; }
+
+/* ------------------------------------------------------------------ */
+/* Webcam flutuante (arrastável; aparece no vídeo onde estiver)         */
+/* ------------------------------------------------------------------ */
+const camAllowed = () => !!settings.webcam && (settings.mode === 'screen' || settings.mode === 'area');
+const camAspect = () => (settings.webcamShape === 'circle' ? 1 : 16 / 9);
+const camConfig = () => ({ deviceId: settings.webcamDeviceId, shape: settings.webcamShape, mirror: !!settings.webcamMirror, blur: !!settings.webcamBlur, blurStrength: settings.webcamBlurStrength });
+
+function targetRect() {
+  // Retângulo (em coordenadas de tela) que está sendo gravado
+  if (settings.mode === 'area' && settings.region) {
+    const r = settings.region; const d = getDisplay(r.displayId);
+    return { x: d.bounds.x + r.x, y: d.bounds.y + r.y, width: r.w, height: r.h };
+  }
+  return getDisplay(settings.displayId).workArea;
+}
+function camSizeFor(width) {
+  const w = Math.round(Math.max(100, Math.min(1000, width)));
+  return { width: w, height: Math.round(w / camAspect()) };
+}
+function placeCam(corner) {
+  if (!alive(camWin)) return;
+  const t = targetRect(); const b = camWin.getBounds();
+  const m = Math.round(Math.min(t.width, t.height) * 0.03);
+  let { width, height } = b;
+  if (width > t.width - m * 2 || height > t.height - m * 2) ({ width, height } = camSizeFor(Math.min(t.width, t.height) * 0.35));
+  const x = corner.includes('l') ? t.x + m : corner === 'c' ? t.x + (t.width - width) / 2 : t.x + t.width - width - m;
+  const y = corner.includes('t') ? t.y + m : corner === 'c' ? t.y + (t.height - height) / 2 : t.y + t.height - height - m;
+  camWin.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
+  saveCamBounds();
+}
+function camInsideTarget() {
+  if (!alive(camWin)) return true;
+  const b = camWin.getBounds(); const t = targetRect();
+  return b.x >= t.x && b.y >= t.y && b.x + b.width <= t.x + t.width && b.y + b.height <= t.y + t.height;
+}
+function saveCamBounds() {
+  if (!alive(camWin)) return;
+  clearTimeout(camSaveTimer);
+  camSaveTimer = setTimeout(() => {
+    if (!alive(camWin)) return;
+    settings.webcamBounds = camWin.getBounds();
+    settings.webcamWidth = settings.webcamBounds.width;
+    saveSettings();
+    send('cam:size', settings.webcamWidth);
+  }, 300);
+}
+function syncCamWindow() {
+  if (!camAllowed()) { if (alive(camWin)) camWin.close(); camWin = null; return; }
+  if (alive(camWin)) {
+    camWin.webContents.send('cam:config', camConfig());
+    const b = camWin.getBounds(); const sz = camSizeFor(settings.webcamWidth || b.width);
+    if (sz.width !== b.width || sz.height !== b.height) camWin.setBounds({ x: b.x, y: b.y, ...sz });
+    return;
+  }
+  let b = settings.webcamBounds;
+  const visible = b && screen.getAllDisplays().some((d) => b.x < d.bounds.x + d.bounds.width && b.x + b.width > d.bounds.x && b.y < d.bounds.y + d.bounds.height && b.y + b.height > d.bounds.y);
+  const sz = camSizeFor(settings.webcamWidth || 260);
+  if (!visible) {
+    const t = targetRect();
+    b = { x: t.x + t.width - sz.width - 24, y: t.y + t.height - sz.height - 24 };
+  }
+  const bounds = { x: Math.round(b.x), y: Math.round(b.y), ...sz };
+  camWin = new BrowserWindow({
+    ...bounds, frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, resizable: false,
+    maximizable: false, minimizable: false, fullscreenable: false, hasShadow: false, show: false,
+    title: 'GT Webcam', webPreferences: webPrefs({ backgroundThrottling: false })
+  });
+  camWin.setAlwaysOnTop(true, 'screen-saver', 2);
+  camWin.loadFile(path.join(__dirname, 'src', 'cam.html'));
+  camWin.once('ready-to-show', () => { if (alive(camWin)) { camWin.setBounds(bounds); camWin.showInactive(); } });
+  camWin.on('closed', () => { camWin = null; });
+}
+
+/* Efeitos de clique (precisa do uiohook-napi) */
+function keysConfig() {
+  // área onde as teclas aparecem (área gravada, relativa ao overlay)
+  let rect = null;
+  if (settings.mode === 'area' && settings.region) rect = { x: settings.region.x, y: settings.region.y, w: settings.region.w, h: settings.region.h };
+  return { pos: settings.keysPos, size: settings.keysSize, duration: settings.keysDuration, rect };
+}
+function startHook() {
+  if (!uIOhook || hookRunning || !(settings.clickEffects || settings.keysShow)) return;
+  uIOhook.removeAllListeners('mousedown');
+  uIOhook.removeAllListeners('keydown');
+  if (settings.keysShow) {
+    if (alive(overlayWin)) overlayWin.webContents.send('keys:config', keysConfig());
+    uIOhook.on('keydown', (e) => {
+      if (!alive(overlayWin) || rec.paused) return;
+      const name = KEY_NAMES[e.keycode];
+      if (!name) return;
+      const combo = e.ctrlKey || e.altKey || e.metaKey;
+      if (settings.keysCombosOnly && !combo && !/^F\d+$/.test(name)) return;
+      overlayWin.webContents.send('key', { name, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey });
+    });
+  }
+  if (!settings.clickEffects) { try { uIOhook.start(); hookRunning = true; } catch (err) { console.error('uiohook', err); } return; }
+  uIOhook.on('mousedown', (e) => {
+    if (!alive(overlayWin)) return;
+    let pt = { x: e.x, y: e.y };
+    if (process.platform === 'win32' && typeof screen.screenToDipPoint === 'function') pt = screen.screenToDipPoint(pt);
+    const b = overlayWin.getBounds();
+    if (pt.x < b.x || pt.y < b.y || pt.x > b.x + b.width || pt.y > b.y + b.height) return;
+    overlayWin.webContents.send('click', { x: pt.x - b.x, y: pt.y - b.y, button: e.button });
+  });
+  try { uIOhook.start(); hookRunning = true; } catch (err) { console.error('uiohook', err); }
+}
+function stopHook() {
+  if (uIOhook && hookRunning) { try { uIOhook.stop(); } catch { /* ignora */ } hookRunning = false; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Captura de imagem                                                    */
+/* ------------------------------------------------------------------ */
+let frameReqId = 0;
+function requestFrame() {
+  return new Promise((resolve) => {
+    if (!alive(mainWin)) return resolve(null);
+    const id = ++frameReqId;
+    const h = (_e, rid, data) => {
+      if (rid !== id) return;
+      clearTimeout(t); ipcMain.removeListener('frame:response', h); resolve(data);
+    };
+    const t = setTimeout(() => { ipcMain.removeListener('frame:response', h); resolve(null); }, 4000);
+    ipcMain.on('frame:response', h);
+    mainWin.webContents.send('frame:request', id);
+  });
+}
+
+async function takeScreenshot() {
+  try {
+    ensureOutputDir();
+    const file = path.join(settings.outputDir, `Captura_${stamp()}.png`);
+    let buffer = null;
+
+    if (rec.active) {
+      const dataUrl = await requestFrame();
+      if (dataUrl) buffer = Buffer.from(dataUrl.split(',')[1], 'base64');
+    }
+    if (!buffer) {
+      let img = null;
+      if (settings.mode === 'window' && settings.windowId) {
+        const srcs = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 3840, height: 2160 } });
+        const src = srcs.find((s) => s.id === settings.windowId);
+        if (src) img = src.thumbnail;
+      }
+      if (!img) {
+        const displayId = settings.mode === 'area' && settings.region ? settings.region.displayId : settings.displayId;
+        const d = getDisplay(displayId);
+        const size = { width: Math.round(d.bounds.width * d.scaleFactor), height: Math.round(d.bounds.height * d.scaleFactor) };
+        const srcs = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
+        const src = srcs.find((s) => s.display_id === String(d.id)) || srcs[0];
+        img = src.thumbnail;
+        if (settings.mode === 'area' && settings.region) {
+          const r = settings.region; const k = img.getSize().width / d.bounds.width;
+          img = img.crop({ x: Math.round(r.x * k), y: Math.round(r.y * k), width: Math.round(r.w * k), height: Math.round(r.h * k) });
+        }
+      }
+      buffer = img.toPNG();
+    }
+    fs.writeFileSync(file, buffer);
+    send('toast', `Imagem salva: ${path.basename(file)}`);
+    send('files:changed');
+    return file;
+  } catch (e) {
+    send('toast', `Falha ao capturar imagem: ${e.message}`, true);
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* FFmpeg                                                               */
+/* ------------------------------------------------------------------ */
+const exportProcs = new Map(); // webContents.id -> processo em andamento
+
+function runFfmpeg(args, { duration, onProgress, owner } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!ffmpegPath) return reject(new Error('FFmpeg não encontrado. Rode "npm install" novamente.'));
+    const p = spawn(ffmpegPath, ['-hide_banner', '-nostdin', '-y', ...args], { windowsHide: true });
+    if (owner) exportProcs.set(owner, p);
+    const out = []; let err = '';
+    p.stdout.on('data', (d) => out.push(d));
+    p.stderr.on('data', (d) => {
+      const txt = d.toString();
+      err = (err + txt).slice(-30000);
+      if (onProgress && duration) {
+        const m = /time=(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(txt);
+        if (m) onProgress(Math.min(1, (Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) / duration));
+      }
+    });
+    p.on('error', reject);
+    p.on('close', (code) => {
+      if (owner) exportProcs.delete(owner);
+      if (code === 0) resolve(Buffer.concat(out));
+      else reject(new Error(p.killed ? 'cancelado' : err.trim().split('\n').slice(-4).join('\n')));
+    });
+  });
+}
+
+function probe(file) {
+  return new Promise((resolve) => {
+    if (!ffmpegPath) return resolve(null);
+    const p = spawn(ffmpegPath, ['-hide_banner', '-i', file], { windowsHide: true });
+    let e = '';
+    p.stderr.on('data', (d) => { e += d; });
+    p.on('error', () => resolve(null));
+    p.on('close', () => {
+      const dm = /Duration: (\d+):(\d+):(\d+(?:\.\d+)?)/.exec(e);
+      const vm = /Video:.*?(\d{2,5})x(\d{2,5})/.exec(e);
+      const fm = /(\d+(?:\.\d+)?) fps/.exec(e) || /(\d+(?:\.\d+)?) tbr/.exec(e);
+      resolve({
+        duration: dm ? Number(dm[1]) * 3600 + Number(dm[2]) * 60 + Number(dm[3]) : null,
+        width: vm ? Number(vm[1]) : null, height: vm ? Number(vm[2]) : null,
+        fps: fm ? Number(fm[1]) : null, hasAudio: /Stream #.*Audio:/.test(e)
+      });
+    });
+  });
+}
+
+// O MediaRecorder gera arquivos sem índice/duração: uma cópia rápida (sem recodificar) corrige isso
+async function finalizeRecording(file) {
+  if (!ffmpegPath || !file || !fs.existsSync(file)) return;
+  const ext = path.extname(file).toLowerCase();
+  const tmp = `${file}.tmp${ext}`;
+  try {
+    const args = ['-i', file, '-map', '0', '-c', 'copy'];
+    if (ext === '.mp4') args.push('-movflags', '+faststart');
+    await runFfmpeg([...args, tmp]);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    console.error('Falha ao finalizar gravação', e.message);
+    try { fs.unlinkSync(tmp); } catch { /* ignora */ }
+  }
+}
+
+const num = (n) => Number(n).toFixed(3);
+
+// Monta o comando de exportação do editor
+function buildExport(spec, tmpDir) {
+  const W = Math.floor(spec.width / 2) * 2, H = Math.floor(spec.height / 2) * 2;
+  const fps = Math.max(10, Math.min(60, Math.round(spec.fps || 30)));
+  const args = ['-i', spec.input];
+  const parts = [];
+  let v = '[0:v]';
+  let n = 0;
+  const label = () => `[x${n++}]`;
+
+  // tamanho par (exigência do H.264)
+  if (W !== spec.width || H !== spec.height) { const o = label(); parts.push(`${v}crop=${W}:${H}:0:0${o}`); v = o; }
+
+  // zoom animado (entra e sai suave)
+  const zooms = (spec.zooms || []).filter((z) => z.end > z.start && z.scale > 1.01);
+  if (zooms.length) {
+    const ramp = (z) => {
+      const r = Math.min(0.4, (z.end - z.start) / 2);
+      return `clip((t-${num(z.start)})/${num(r)},0,1)*clip((${num(z.end)}-t)/${num(r)},0,1)`;
+    };
+    const Z = `(1${zooms.map((z) => `+${num(z.scale - 1)}*${ramp(z)}`).join('')})`;
+    const CX = `(${W / 2}${zooms.map((z) => `+${num(z.cx * W - W / 2)}*${ramp(z)}`).join('')})`;
+    const CY = `(${H / 2}${zooms.map((z) => `+${num(z.cy * H - H / 2)}*${ramp(z)}`).join('')})`;
+    const o = label();
+    parts.push(`${v}scale=w='trunc(iw*${Z}/2)*2':h='trunc(ih*${Z}/2)*2':eval=frame:flags=bicubic,` +
+      `crop=${W}:${H}:x='clip(${CX}*iw/${W}-${W / 2},0,iw-${W})':y='clip(${CY}*ih/${H}-${H / 2},0,ih-${H})'${o}`);
+    v = o;
+  }
+
+  // textos e desenhos (imagens PNG transparentes do tamanho do vídeo)
+  (spec.overlays || []).forEach((ov, i) => {
+    const png = path.join(tmpDir, `ov${i}.png`);
+    fs.writeFileSync(png, Buffer.from(ov.png.split(',')[1], 'base64'));
+    args.push('-i', png);
+    const o = label();
+    parts.push(`${v}[${i + 1}:v]overlay=0:0:eof_action=repeat:enable='between(t,${num(ov.start)},${num(ov.end)})'${o}`);
+    v = o;
+  });
+
+  // cortes: mantém só os trechos escolhidos
+  const keep = spec.keep && spec.keep.length ? spec.keep : [[0, spec.duration]];
+  const full = keep.length === 1 && keep[0][0] <= 0.01 && keep[0][1] >= spec.duration - 0.01;
+  let a = spec.hasAudio && spec.format !== 'gif' ? '[0:a]' : null;   // GIF não tem som
+  if (!full) {
+    const k = keep.length;
+    const vs = keep.map((_, i) => `[vs${i}]`), as = keep.map((_, i) => `[as${i}]`);
+    parts.push(k > 1 ? `${v}split=${k}${vs.join('')}` : `${v}null${vs[0]}`);
+    if (a) parts.push(k > 1 ? `${a}asplit=${k}${as.join('')}` : `${a}anull${as[0]}`);
+    const seq = [];
+    keep.forEach(([s, e], i) => {
+      parts.push(`${vs[i]}trim=start=${num(s)}:end=${num(e)},setpts=PTS-STARTPTS[vt${i}]`);
+      seq.push(`[vt${i}]`);
+      if (a) { parts.push(`${as[i]}atrim=start=${num(s)}:end=${num(e)},asetpts=PTS-STARTPTS[at${i}]`); seq.push(`[at${i}]`); }
+    });
+    parts.push(`${seq.join('')}concat=n=${k}:v=1:a=${a ? 1 : 0}[vout]${a ? '[aout]' : ''}`);
+    v = '[vout]'; if (a) a = '[aout]';
+  } else {
+    const o = '[vout]'; parts.push(`${v}null${o}`); v = o;
+    if (a) a = '0:a?';
+  }
+
+  const outDuration = keep.reduce((t, [s, e]) => t + (e - s), 0);
+  const fmt = spec.format || 'mp4';
+
+  if (fmt === 'gif') {
+    // GIF: 12 qps, até 960 px de largura, paleta otimizada
+    parts.push(`${v}fps=12,scale='min(960,iw)':-2:flags=lanczos,split[g1][g2]`,
+      '[g1]palettegen=stats_mode=diff[pal]', '[g2][pal]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle[gout]');
+    args.push('-filter_complex', parts.join(';'), '-map', '[gout]', '-loop', '0', spec.output);
+    return { args, outDuration };
+  }
+  if (fmt === 'whatsapp') {
+    // até 720p e ~15 MB no total
+    parts.push(`${v}scale='if(gte(iw,ih),min(1280,iw),-2)':'if(gte(iw,ih),-2,min(1280,ih))':flags=lanczos[wout]`);
+    v = '[wout]';
+    const totalKbps = (15 * 8192) / Math.max(1, outDuration);
+    const vk = Math.round(Math.max(250, Math.min(2500, totalKbps - 96)));
+    args.push('-filter_complex', parts.join(';'), '-map', v);
+    if (a) args.push('-map', a, '-c:a', 'aac', '-b:a', '96k', '-ac', '2');
+    args.push('-c:v', 'libx264', '-preset', 'medium', '-b:v', `${vk}k`, '-maxrate', `${Math.round(vk * 1.5)}k`,
+      '-bufsize', `${vk * 2}k`, '-pix_fmt', 'yuv420p', '-profile:v', 'main', '-r', String(Math.min(fps, 30)),
+      '-movflags', '+faststart', spec.output);
+    return { args, outDuration };
+  }
+  args.push('-filter_complex', parts.join(';'), '-map', v);
+  if (a) args.push('-map', a, '-c:a', 'aac', '-b:a', '192k');
+  args.push('-c:v', 'libx264', '-preset', spec.preset || 'veryfast', '-crf', String(spec.crf || 20),
+    '-pix_fmt', 'yuv420p', '-r', String(fps), '-movflags', '+faststart', spec.output);
+  return { args, outDuration };
+}
+
+/* ------------------------------------------------------------------ */
+/* Editor                                                               */
+/* ------------------------------------------------------------------ */
+function openEditor(file, project = null) {
+  const w = new BrowserWindow({
+    width: 1320, height: 860, minWidth: 1040, minHeight: 660, icon: ICON,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#14161b' : '#f3f4f7',
+    title: `${path.basename(project || file)} — RecFlow Editor`, autoHideMenuBar: true, show: false,
+    webPreferences: webPrefs()
+  });
+  w.setMenu(null);
+  w.loadFile(path.join(__dirname, 'src', 'editor.html'), { query: project ? { project } : { file } });
+  w.once('ready-to-show', () => { w.maximize(); w.show(); });
+  // Fechar com alterações não salvas: pergunta antes
+  w.webContents.on('will-prevent-unload', (ev) => {
+    const r = dialog.showMessageBoxSync(w, {
+      type: 'question', buttons: ['Sair sem salvar', 'Cancelar'], defaultId: 1, cancelId: 1,
+      title: 'Projeto não salvo', message: 'Há alterações que não foram salvas no projeto.',
+      detail: 'Use "Salvar projeto" (Ctrl+S) para continuar a edição depois.'
+    });
+    if (r === 0) ev.preventDefault();
+  });
+  const wcId = w.webContents.id;   // após fechar, w.webContents não pode mais ser lido
+  w.on('closed', () => { const p = exportProcs.get(wcId); if (p) p.kill(); });
+  return w;
+}
+
+/* ------------------------------------------------------------------ */
+/* Projetos (.gtproj)                                                   */
+/* ------------------------------------------------------------------ */
+function readProject(projPath) {
+  const data = JSON.parse(fs.readFileSync(projPath, 'utf8'));
+  if (!['recflow', 'gravador-tela'].includes(data.app) || !data.edit) throw new Error('Este arquivo não é um projeto do RecFlow.');
+  let video = data.video;
+  if (!video || !fs.existsSync(video)) {
+    const rel = data.videoRelative && path.resolve(path.dirname(projPath), data.videoRelative);
+    if (rel && fs.existsSync(rel)) video = rel;
+    else throw new Error(`Vídeo do projeto não encontrado:\n${data.video}`);
+  }
+  return { ...data, video };
+}
+function openProject(projPath) {
+  try {
+    readProject(projPath);
+    openEditor(null, projPath);
+    return true;
+  } catch (e) {
+    dialog.showMessageBox(alive(mainWin) ? mainWin : undefined, { type: 'error', title: 'Abrir projeto', message: 'Não foi possível abrir o projeto.', detail: e.message });
+    return false;
+  }
+}
+async function chooseAndOpenProject(parent) {
+  const r = await dialog.showOpenDialog(parent, {
+    title: 'Abrir projeto', defaultPath: settings.outputDir,
+    filters: [{ name: 'Projeto RecFlow', extensions: ['gtproj'] }], properties: ['openFile']
+  });
+  if (!r.canceled && r.filePaths[0]) openProject(r.filePaths[0]);
+}
+function projectFromArgv(argv) {
+  return argv.find((a) => typeof a === 'string' && a.toLowerCase().endsWith(PROJECT_EXT) && fs.existsSync(a));
+}
+
+/* ------------------------------------------------------------------ */
+/* Contagem regressiva                                                  */
+/* ------------------------------------------------------------------ */
+let countdownWin = null, countdownDone = null;
+function runCountdown(seconds) {
+  return new Promise((resolve) => {
+    if (alive(countdownWin)) countdownWin.close();
+    const t = settings.mode === 'window' || settings.mode === 'webcam' ? getDisplay(cursorDisplayId()).workArea : targetRect();
+    const size = 260;
+    countdownWin = new BrowserWindow({
+      x: Math.round(t.x + (t.width - size) / 2), y: Math.round(t.y + (t.height - size) / 2), width: size, height: size,
+      frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, focusable: false, resizable: false,
+      hasShadow: false, show: false, title: 'GT Contagem', webPreferences: webPrefs()
+    });
+    countdownWin.setIgnoreMouseEvents(true);
+    countdownWin.setAlwaysOnTop(true, 'screen-saver', 3);
+    countdownWin.setContentProtection(true);
+    countdownWin.loadFile(path.join(__dirname, 'src', 'countdown.html'), { query: { s: String(seconds) } });
+    countdownWin.once('ready-to-show', () => alive(countdownWin) && countdownWin.showInactive());
+    let finished = false;
+    countdownDone = (ok) => {
+      if (finished) return; finished = true;
+      clearTimeout(timer);
+      if (alive(countdownWin)) countdownWin.close();
+      countdownWin = null; countdownDone = null;
+      resolve(ok);
+    };
+    const timer = setTimeout(() => countdownDone && countdownDone(true), seconds * 1000 + 350);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Agendamento                                                          */
+/* ------------------------------------------------------------------ */
+function checkSchedules() {
+  if (!settings) return;
+  const now = Date.now(); let changed = false;
+  for (const s of settings.schedules) {
+    if (!s.enabled || s.done) continue;
+    const start = new Date(s.start).getTime();
+    const end = start + Number(s.duration) * 60000;
+    if (Number.isNaN(start)) continue;
+    if (now >= end) { s.done = true; s.missed = true; changed = true; }
+    else if (now >= start && !rec.active) {
+      s.done = true; changed = true;
+      send('schedule:start', { id: s.id, stopAt: end });
+    }
+  }
+  if (changed) { saveSettings(); send('settings:changed', settings); }
+}
+
+/* ------------------------------------------------------------------ */
+/* IPC                                                                  */
+/* ------------------------------------------------------------------ */
+function registerIpc() {
+  ipcMain.handle('app:openExternal', (_e, url) => { if (ABOUT_LINKS.includes(url)) shell.openExternal(url); });
+  ipcMain.handle('settings:get', () => ({ version: require('./package.json').version, settings, failedHotkeys, hookAvailable: !!uIOhook, accent: accentColor(), ffmpeg: !!ffmpegPath }));
+  ipcMain.handle('settings:set', (_e, patch) => {
+    const hotkeysChanged = !!patch.hotkeys;
+    settings = { ...settings, ...patch, hotkeys: { ...settings.hotkeys, ...(patch.hotkeys || {}) } };
+    saveSettings();
+    if ('hideApp' in patch && alive(mainWin)) mainWin.setContentProtection(!!settings.hideApp);
+    if ('theme' in patch) nativeTheme.themeSource = settings.theme || 'system';
+    if (['webcam', 'webcamShape', 'webcamDeviceId', 'webcamMirror', 'webcamWidth', 'webcamBlur', 'webcamBlurStrength', 'mode', 'region', 'displayId'].some((k) => k in patch)) syncCamWindow();
+    const failed = hotkeysChanged ? registerHotkeys() : [];
+    return { settings, failed };
+  });
+
+  ipcMain.handle('sources:list', async () => {
+    const displays = screen.getAllDisplays();
+    const primary = screen.getPrimaryDisplay();
+    const srcs = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 } });
+    const screens = srcs.filter((s) => s.id.startsWith('screen:')).map((s, i) => {
+      const d = displays.find((x) => String(x.id) === s.display_id) || displays[i] || primary;
+      return {
+        id: s.id, displayId: String(d.id),
+        name: `Monitor ${i + 1}${d.id === primary.id ? ' (principal)' : ''}`,
+        thumb: s.thumbnail.toDataURL(),
+        width: Math.round(d.bounds.width * d.scaleFactor), height: Math.round(d.bounds.height * d.scaleFactor)
+      };
+    });
+    const windows = srcs
+      .filter((s) => s.id.startsWith('window:') && s.name && s.name !== APP_TITLE && !s.name.startsWith('GT '))
+      .map((s) => ({ id: s.id, name: s.name, thumb: s.thumbnail.toDataURL() }));
+    return { screens, windows };
+  });
+
+  ipcMain.handle('capture:target', async () => {
+    const s = settings;
+    if (s.mode === 'webcam') return { kind: 'webcam', displayId: null };
+    if (s.mode === 'window') {
+      if (!s.windowId) return { error: 'Selecione uma janela na aba Início.' };
+      return { kind: 'window', sourceId: s.windowId, displayId: String(screen.getPrimaryDisplay().id) };
+    }
+    if (s.mode === 'area' && !s.region) return { error: 'Selecione uma área primeiro.' };
+    const d = getDisplay(s.mode === 'area' ? s.region.displayId : s.displayId);
+    const srcs = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+    const idx = screen.getAllDisplays().findIndex((x) => x.id === d.id);
+    const src = srcs.find((x) => x.display_id === String(d.id)) || srcs[idx] || srcs[0];
+    if (!src) return { error: 'Nenhuma tela disponível para captura.' };
+    const out = {
+      kind: s.mode, sourceId: src.id, displayId: String(d.id),
+      width: Math.round(d.bounds.width * d.scaleFactor), height: Math.round(d.bounds.height * d.scaleFactor), crop: null
+    };
+    if (s.mode === 'area') {
+      const r = s.region;
+      out.crop = { x: r.x / d.bounds.width, y: r.y / d.bounds.height, w: r.w / d.bounds.width, h: r.h / d.bounds.height };
+    }
+    return out;
+  });
+
+  ipcMain.handle('region:select', () => selectRegion());
+
+  ipcMain.handle('rec:begin', (_e, { ext, displayId }) => {
+    ensureOutputDir();
+    rec.file = path.join(settings.outputDir, `Gravacao_${stamp()}.${ext === 'webm' ? 'webm' : 'mp4'}`);
+    rec.stream = fs.createWriteStream(rec.file);
+    rec.active = true; rec.paused = false; rec.displayId = displayId || cursorDisplayId();
+    if (settings.mode === 'area' && settings.showBorder) showBorder();
+    if (alive(camWin)) { if (!camInsideTarget()) placeCam('br'); camWin.moveTop(); }
+    if (settings.mode === 'screen' || settings.mode === 'area') {
+      if ((settings.clickEffects || settings.keysShow) && uIOhook) { ensureOverlay(rec.displayId); startHook(); }
+    }
+    if (settings.minimizeOnRecord && alive(mainWin)) mainWin.minimize();
+    updateTray();
+    return rec.file;
+  });
+
+  ipcMain.handle('rec:chunk', (_e, buf) => new Promise((resolve) => {
+    if (!rec.stream) return resolve(false);
+    rec.stream.write(Buffer.from(buf), () => resolve(true));
+  }));
+
+  ipcMain.handle('rec:end', () => new Promise((resolve) => {
+    const file = rec.file;
+    const finish = async () => {
+      rec.active = false; rec.paused = false; rec.stream = null;
+      closeBorder(); stopHook();
+      if (alive(overlayWin)) overlayWin.webContents.send('keys:config', null);
+      if (!drawing) closeOverlay();
+      updateTray();
+      if (pendingQuit) { resolve(file); setImmediate(() => app.quit()); return; }
+      await finalizeRecording(file);
+      resolve(file);
+      if (settings.openEditor && file && fs.existsSync(file) && fs.statSync(file).size > 0) openEditor(file);
+    };
+    if (rec.stream) rec.stream.end(finish); else finish();
+  }));
+
+  ipcMain.on('rec:paused', (_e, p) => { rec.paused = !!p; updateTray(); });
+
+  ipcMain.handle('screenshot:take', () => takeScreenshot());
+
+  ipcMain.handle('files:list', () => {
+    try {
+      ensureOutputDir();
+      return fs.readdirSync(settings.outputDir)
+        .filter((f) => /\.(mp4|webm|png|gif|gtproj)$/i.test(f))
+        .map((f) => {
+          const p = path.join(settings.outputDir, f); const st = fs.statSync(p);
+          return { name: f, path: p, size: st.size, mtime: st.mtimeMs };
+        })
+        .sort((a, b) => b.mtime - a.mtime)
+        .slice(0, 200);
+    } catch { return []; }
+  });
+  ipcMain.handle('files:open', (_e, p) => (insideOutput(p) ? shell.openPath(p) : 'negado'));
+  ipcMain.handle('files:show', (_e, p) => { if (insideOutput(p)) shell.showItemInFolder(p); });
+  ipcMain.handle('files:delete', async (_e, p) => {
+    if (!insideOutput(p) || p === rec.file) return false;
+    await shell.trashItem(p); return true;
+  });
+  ipcMain.handle('folder:open', () => { ensureOutputDir(); return shell.openPath(settings.outputDir); });
+  ipcMain.handle('folder:choose', async () => {
+    const r = await dialog.showOpenDialog(mainWin, { properties: ['openDirectory', 'createDirectory'], defaultPath: settings.outputDir });
+    if (r.canceled || !r.filePaths[0]) return null;
+    settings.outputDir = r.filePaths[0]; saveSettings();
+    return settings.outputDir;
+  });
+
+  ipcMain.handle('cam:init', () => camConfig());
+  ipcMain.on('cam:drag-start', (_e, type) => {
+    if (!alive(camWin)) return;
+    camDrag = { type, cursor: screen.getCursorScreenPoint(), bounds: camWin.getBounds() };
+  });
+  ipcMain.on('cam:drag', () => {
+    if (!camDrag || !alive(camWin)) return;
+    const c = screen.getCursorScreenPoint(); const b = camDrag.bounds;
+    const dx = c.x - camDrag.cursor.x, dy = c.y - camDrag.cursor.y;
+    if (camDrag.type === 'resize') {
+      const sz = camSizeFor(b.width + Math.max(dx, dy * camAspect()));
+      camWin.setBounds({ x: b.x, y: b.y, ...sz });
+    } else {
+      camWin.setBounds({ x: b.x + dx, y: b.y + dy, width: b.width, height: b.height });
+    }
+  });
+  ipcMain.on('cam:drag-end', () => { camDrag = null; saveCamBounds(); });
+  ipcMain.on('cam:wheel', (_e, dir) => {
+    if (!alive(camWin)) return;
+    const b = camWin.getBounds(); const sz = camSizeFor(b.width * (dir < 0 ? 1.08 : 1 / 1.08));
+    camWin.setBounds({ x: Math.round(b.x + (b.width - sz.width) / 2), y: Math.round(b.y + (b.height - sz.height) / 2), ...sz });
+    saveCamBounds();
+  });
+  ipcMain.on('cam:place', (_e, corner) => placeCam(corner));
+  ipcMain.on('cam:hide', () => { settings.webcam = false; saveSettings(); syncCamWindow(); send('settings:changed', settings); });
+
+  ipcMain.handle('editor:open', (_e, file) => { if (file && fs.existsSync(file)) openEditor(file); });
+  ipcMain.handle('editor:info', async (_e, file) => {
+    if (!file || !fs.existsSync(file)) return { error: 'Arquivo não encontrado.' };
+    const info = (await probe(file)) || {};
+    return { ...info, file, name: path.basename(file), url: pathToFileURL(file).href, ffmpeg: !!ffmpegPath };
+  });
+  ipcMain.handle('editor:thumbs', async (_e, file, duration, count) => {
+    if (!ffmpegPath || !duration) return null;
+    try {
+      const png = await runFfmpeg(['-i', file, '-an', '-vf', `fps=${count}/${num(duration)},scale=-2:90,tile=${count}x1`,
+        '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-']);
+      return `data:image/png;base64,${png.toString('base64')}`;
+    } catch { return null; }
+  });
+  ipcMain.handle('editor:waveform', async (_e, file, points) => {
+    if (!ffmpegPath) return null;
+    try {
+      const raw = await runFfmpeg(['-i', file, '-vn', '-ac', '1', '-ar', '4000', '-f', 's16le', '-']);
+      const samples = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.length / 2));
+      const step = Math.max(1, Math.floor(samples.length / points));
+      const peaks = [];
+      for (let i = 0; i < samples.length; i += step) {
+        let m = 0;
+        for (let j = i; j < Math.min(i + step, samples.length); j++) { const v = Math.abs(samples[j]); if (v > m) m = v; }
+        peaks.push(m / 32768);
+      }
+      return peaks;
+    } catch { return null; }
+  });
+  ipcMain.handle('editor:saveDialog', async (e, defaultPath, kind = 'mp4') => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const filters = {
+      mp4: [{ name: 'Vídeo MP4', extensions: ['mp4'] }],
+      gif: [{ name: 'GIF animado', extensions: ['gif'] }],
+      gtproj: [{ name: 'Projeto RecFlow', extensions: ['gtproj'] }]
+    }[kind] || [];
+    const r = await dialog.showSaveDialog(win, { defaultPath, filters });
+    return r.canceled ? null : r.filePath;
+  });
+  ipcMain.handle('project:load', (_e, projPath) => {
+    try { return { ok: true, project: readProject(projPath), path: projPath, name: path.basename(projPath) }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('project:save', async (e, projPath, data) => {
+    try {
+      let target = projPath;
+      if (!target) {
+        const win = BrowserWindow.fromWebContents(e.sender);
+        const def = `${data.video.replace(/\.[^.\\/]+$/, '')}${PROJECT_EXT}`;
+        const r = await dialog.showSaveDialog(win, { defaultPath: def, filters: [{ name: 'Projeto RecFlow', extensions: ['gtproj'] }] });
+        if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+        target = r.filePath.toLowerCase().endsWith(PROJECT_EXT) ? r.filePath : r.filePath + PROJECT_EXT;
+      }
+      const doc = {
+        app: 'recflow', version: 1, savedAt: new Date().toISOString(),
+        video: data.video, videoRelative: path.relative(path.dirname(target), data.video),
+        edit: data.edit, export: data.export || {}
+      };
+      fs.writeFileSync(target, JSON.stringify(doc, null, 2));
+      send('files:changed');
+      const win = BrowserWindow.fromWebContents(e.sender);
+      if (win) win.setTitle(`${path.basename(target)} — RecFlow Editor`);
+      return { ok: true, path: target, name: path.basename(target) };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('project:open', (e, p) => {
+    if (p) return openProject(p);
+    return chooseAndOpenProject(BrowserWindow.fromWebContents(e.sender));
+  });
+
+  // contagem regressiva
+  ipcMain.handle('countdown:run', (_e, seconds) => runCountdown(Math.max(1, Math.min(10, Number(seconds) || 3))));
+  ipcMain.on('countdown:cancel', () => countdownDone && countdownDone(false));
+
+  // marca d'água
+  const readImage = (p) => {
+    try {
+      const img = nativeImage.createFromPath(p);
+      return img.isEmpty() ? null : img.toDataURL();
+    } catch { return null; }
+  };
+  ipcMain.handle('wm:choose', async (e) => {
+    const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Escolher logo / marca d\'água', properties: ['openFile'],
+      filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }]
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const dataUrl = readImage(r.filePaths[0]);
+    if (!dataUrl) return { error: 'Imagem inválida.' };
+    settings.wmPath = r.filePaths[0]; settings.wmEnabled = true; saveSettings();
+    return { path: r.filePaths[0], dataUrl };
+  });
+  ipcMain.handle('wm:read', () => (settings.wmPath ? readImage(settings.wmPath) : null));
+  ipcMain.handle('editor:export', async (e, spec) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gravador-'));
+    const owner = e.sender.id;
+    try {
+      if (path.resolve(spec.output) === path.resolve(spec.input)) throw new Error('Escolha um nome diferente do arquivo original.');
+      const { args, outDuration } = buildExport(spec, tmpDir);
+      await runFfmpeg(args, {
+        duration: outDuration, owner,
+        onProgress: (p) => { if (!e.sender.isDestroyed()) e.sender.send('editor:progress', p); }
+      });
+      send('files:changed');
+      return { ok: true, file: spec.output };
+    } catch (err) {
+      try { if (fs.existsSync(spec.output)) fs.unlinkSync(spec.output); } catch { /* ignora */ }
+      return { ok: false, error: err.message };
+    } finally {
+      fs.rm(tmpDir, { recursive: true, force: true }, () => {});
+    }
+  });
+  ipcMain.on('editor:cancel', (e) => { const p = exportProcs.get(e.sender.id); if (p) p.kill(); });
+  ipcMain.handle('editor:showFile', (_e, p) => { if (p && fs.existsSync(p)) shell.showItemInFolder(p); });
+  ipcMain.handle('editor:openFile', (_e, p) => (p && fs.existsSync(p) ? shell.openPath(p) : null));
+
+  ipcMain.handle('overlay:init', () => ({ drawing, drawOpts, keys: rec.active && settings.keysShow ? keysConfig() : null }));
+  ipcMain.handle('toolbar:init', () => drawOpts);
+  ipcMain.on('draw:toggle', (_e, on) => setDrawing(on === undefined || on === null ? !drawing : !!on));
+  ipcMain.on('draw:tool', (_e, o) => {
+    drawOpts = { ...drawOpts, ...o };
+    if (alive(overlayWin)) overlayWin.webContents.send('draw:tool', drawOpts);
+    if (alive(toolbarWin)) toolbarWin.webContents.send('draw:tool', drawOpts);
+  });
+  ipcMain.on('draw:undo', () => alive(overlayWin) && overlayWin.webContents.send('draw:undo'));
+  ipcMain.on('draw:clear', () => alive(overlayWin) && overlayWin.webContents.send('draw:clear'));
+}
+
+/* ------------------------------------------------------------------ */
+/* Ciclo de vida                                                        */
+/* ------------------------------------------------------------------ */
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', (_e, argv) => {
+    const proj = projectFromArgv(argv);
+    if (proj && settings) { openProject(proj); return; }
+    if (mainWin) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.show(); mainWin.focus(); }
+  });
+
+  app.whenReady().then(() => {
+    if (process.platform === 'win32') app.setAppUserModelId('br.com.api2dev.recflow');
+    settings = loadSettings();
+    nativeTheme.themeSource = settings.theme || 'system';
+    // gt://app/<caminho> -> arquivo dentro da pasta do aplicativo (somente leitura)
+    protocol.handle('gt', (req) => {
+      const u = new URL(req.url);
+      const rel = decodeURIComponent(u.pathname).replace(/^\/+/, '');
+      const full = path.normalize(path.join(__dirname, rel));
+      if (u.host !== 'app' || !full.startsWith(path.normalize(__dirname + path.sep))) return new Response('negado', { status: 403 });
+      const types = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json', '.tflite': 'application/octet-stream' };
+      return net.fetch(pathToFileURL(full).href).then((r) => new Response(r.body, {
+        status: r.status,
+        headers: { 'content-type': types[path.extname(full).toLowerCase()] || 'application/octet-stream', 'access-control-allow-origin': '*' }
+      }));
+    });
+    registerIpc();
+    createMainWindow();
+    const proj = projectFromArgv(process.argv);
+    if (proj) openProject(proj);
+    syncCamWindow();
+    if (systemPreferences.on) {
+      systemPreferences.on('accent-color-changed', () => send('accent', accentColor()));
+    }
+    createTray();
+    registerHotkeys();
+    setInterval(checkSchedules, 5000);
+  });
+
+  app.on('before-quit', (e) => {
+    app.isQuitting = true;
+    if (rec.active) {
+      // Finaliza o arquivo antes de sair
+      e.preventDefault();
+      if (!pendingQuit) { pendingQuit = true; send('rec:force-stop'); }
+    }
+  });
+  app.on('will-quit', () => { globalShortcut.unregisterAll(); stopHook(); });
+  app.on('window-all-closed', () => app.quit());
+}

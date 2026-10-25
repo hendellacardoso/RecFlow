@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; style-src 'self' 'unsafe-inline'; script-src 'self' gt: 'wasm-unsafe-eval'; connect-src 'self' gt:; worker-src 'self' blob: gt:">
+  <title>RecFlow</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img class="logo-img" src="../assets/icon.png" alt="">RecFlow</div>
+
+    <nav class="modes" id="modes">
+      <button data-mode="screen" title="Tela inteira">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>
+        <span>Tela inteira</span>
+      </button>
+      <button data-mode="area" title="Área retangular">
+        <svg viewBox="0 0 24 24"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>
+        <span>Área</span>
+      </button>
+      <button data-mode="window" title="Janela">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 9h18"/><circle cx="6" cy="6.5" r=".6"/><circle cx="8.3" cy="6.5" r=".6"/></svg>
+        <span>Janela</span>
+      </button>
+      <button data-mode="webcam" title="Somente webcam">
+        <svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/></svg>
+        <span>Webcam</span>
+      </button>
+    </nav>
+
+    <div class="rec-controls">
+      <div class="status">
+        <span id="recDot" class="rec-dot"></span>
+        <span id="timer" class="timer">00:00:00</span>
+        <span id="size" class="size">0 MB</span>
+        <span class="vu" title="Nível de áudio da gravação"><span id="vuBar"></span></span>
+      </div>
+      <button id="btnCam" class="icon-btn" title="Mostrar / ocultar webcam">
+        <svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/></svg>
+      </button>
+      <button id="btnDraw" class="icon-btn" title="Desenhar na tela">
+        <svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/></svg>
+      </button>
+      <button id="btnShot" class="icon-btn" title="Capturar imagem">
+        <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+      </button>
+      <button id="btnPause" class="icon-btn" title="Pausar" disabled>
+        <svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></svg>
+      </button>
+      <button id="btnRec" class="rec-btn"><span class="rec-circle"></span><span id="btnRecLabel">REC</span></button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <button class="nav active" data-panel="home">Início</button>
+      <button class="nav" data-panel="video">Vídeo</button>
+      <button class="nav" data-panel="audio">Áudio</button>
+      <button class="nav" data-panel="webcam">Webcam</button>
+      <button class="nav" data-panel="draw">Desenho e teclas</button>
+      <button class="nav" data-panel="hotkeys">Atalhos</button>
+      <button class="nav" data-panel="schedule">Agendamento</button>
+      <button class="nav" data-panel="files">Arquivos</button>
+      <button class="nav" data-panel="about">Sobre</button>
+      <div class="sidebar-foot" id="outputShort"></div>
+    </aside>
+
+    <main>
+      <!-- INÍCIO -->
+      <section class="panel active" id="panel-home">
+        <div class="panel-head">
+          <h2 id="targetTitle">Tela inteira</h2>
+          <button id="btnRefresh" class="btn ghost">Atualizar</button>
+        </div>
+
+        <div class="target" data-target="screen">
+          <p class="hint">Escolha o monitor que será gravado.</p>
+          <div class="grid" id="screenGrid"></div>
+        </div>
+
+        <div class="target" data-target="area">
+          <div class="area-box">
+            <div>
+              <div class="area-title">Área selecionada</div>
+              <div id="regionInfo" class="hint">Nenhuma área selecionada.</div>
+            </div>
+            <button id="btnSelectArea" class="btn primary">Selecionar área</button>
+          </div>
+          <p class="hint">Arraste para marcar a região. Enter confirma, Esc cancela. Durante a gravação, uma borda vermelha indica a área.</p>
+        </div>
+
+        <div class="target" data-target="window">
+          <p class="hint">Escolha a janela. A gravação acompanha a janela mesmo se ela for movida.</p>
+          <div class="grid" id="windowGrid"></div>
+        </div>
+
+        <div class="target" data-target="webcam">
+          <p class="hint">Grava somente a câmera (com o microfone, se ativado na aba Áudio). Escolha o dispositivo na aba Webcam.</p>
+        </div>
+
+        <h3>Pré-visualização</h3>
+        <div class="preview">
+          <video id="preview" muted playsinline></video>
+          <div id="previewEmpty" class="preview-empty">A pré-visualização aparece durante a gravação.</div>
+        </div>
+        <div class="summary" id="summary"></div>
+      </section>
+
+      <!-- VÍDEO -->
+      <section class="panel" id="panel-video">
+        <h2>Vídeo</h2>
+        <div class="form">
+          <label>Formato
+            <select data-key="format">
+              <option value="mp4">MP4 (H.264)</option>
+              <option value="webm">WebM (VP9 + Opus)</option>
+            </select>
+          </label>
+          <label>Quadros por segundo
+            <select data-key="fps" data-num>
+              <option value="15">15 fps</option>
+              <option value="24">24 fps</option>
+              <option value="30">30 fps</option>
+              <option value="60">60 fps</option>
+            </select>
+          </label>
+          <label>Qualidade
+            <select data-key="bitrate" data-num>
+              <option value="3">Baixa (3 Mbps)</option>
+              <option value="8">Média (8 Mbps)</option>
+              <option value="14">Alta (14 Mbps)</option>
+              <option value="25">Máxima (25 Mbps)</option>
+            </select>
+          </label>
+        </div>
+        <div class="checks">
+          <label class="check"><input type="checkbox" data-key="hideApp"> Ocultar a janela do gravador no vídeo</label>
+          <label class="check"><input type="checkbox" data-key="showBorder"> Mostrar borda na área gravada</label>
+          <label class="check"><input type="checkbox" data-key="minimizeOnRecord"> Minimizar ao iniciar a gravação</label>
+          <label class="check"><input type="checkbox" data-key="openEditor"> Abrir o editor ao terminar a gravação</label>
+        </div>
+        <h3>Ao iniciar</h3>
+        <div class="form">
+          <label>Contagem regressiva
+            <select data-key="countdown" data-num>
+              <option value="0">Desligada</option>
+              <option value="3">3 segundos</option>
+              <option value="5">5 segundos</option>
+              <option value="10">10 segundos</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint">Durante a contagem, aperte o atalho de gravar (ou o botão) para cancelar. Gravações agendadas começam sem contagem.</p>
+
+        <h3>Logo / marca d'água</h3>
+        <div class="card wm-card">
+          <div class="wm-row">
+            <div class="wm-preview" id="wmPreview"><span>Sem imagem</span></div>
+            <div class="wm-fields">
+              <label class="check big"><input type="checkbox" data-key="wmEnabled"> Colocar logo em todas as gravações</label>
+              <div class="form">
+                <label>Posição
+                  <select data-key="wmPos">
+                    <option value="tl">Superior esquerdo</option>
+                    <option value="tr">Superior direito</option>
+                    <option value="bl">Inferior esquerdo</option>
+                    <option value="br">Inferior direito</option>
+                  </select>
+                </label>
+                <div>
+                  <button id="btnWm" class="btn">Escolher imagem…</button>
+                </div>
+              </div>
+              <label class="range">Tamanho <input type="range" min="4" max="40" step="1" data-key="wmSize"><output data-for="wmSize"></output></label>
+              <label class="range">Opacidade <input type="range" min="10" max="100" step="5" data-key="wmOpacity"><output data-for="wmOpacity"></output></label>
+            </div>
+          </div>
+          <p class="hint">Use um PNG com fundo transparente. O tamanho é em % da largura do vídeo.</p>
+        </div>
+
+        <h3>Aparência</h3>
+        <div class="form">
+          <label>Tema
+            <select data-key="theme">
+              <option value="system">Igual ao Windows</option>
+              <option value="dark">Escuro</option>
+              <option value="light">Claro</option>
+            </select>
+          </label>
+        </div>
+        <h3>Pasta de saída</h3>
+        <div class="folder">
+          <code id="outputDir"></code>
+          <button id="btnChooseFolder" class="btn">Alterar</button>
+          <button id="btnOpenFolder" class="btn ghost">Abrir</button>
+        </div>
+      </section>
+
+      <!-- ÁUDIO -->
+      <section class="panel" id="panel-audio">
+        <h2>Áudio</h2>
+        <p class="hint">Os gráficos mostram o sinal em tempo real (já com o volume aplicado). Toque um som ou fale para conferir.</p>
+        <div class="card">
+          <div class="card-head">
+            <label class="check big"><input type="checkbox" data-key="systemAudio"> Som do sistema (alto-falantes)</label>
+            <span class="db" id="dbSys">—</span>
+          </div>
+          <canvas class="meter" id="meterSys"></canvas>
+          <label class="range">Volume <input type="range" min="0" max="200" step="5" data-key="systemVolume"><output data-for="systemVolume"></output></label>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <label class="check big"><input type="checkbox" data-key="mic"> Microfone</label>
+            <span class="db" id="dbMic">—</span>
+          </div>
+          <canvas class="meter" id="meterMic"></canvas>
+          <div class="form two">
+            <label>Dispositivo
+              <select id="micDevice" data-key="micDeviceId"></select>
+            </label>
+            <label>Redução de ruído
+              <select data-key="micNoise">
+                <option value="off">Desligada (som original)</option>
+                <option value="standard">Padrão</option>
+                <option value="strong">Forte (IA: ventilador, teclado, ruído de fundo)</option>
+              </select>
+            </label>
+          </div>
+          <label class="range">Volume <input type="range" min="0" max="200" step="5" data-key="micVolume"><output data-for="micVolume"></output></label>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <div class="area-title">Teste de gravação</div>
+              <div class="hint" id="testHint">Grava 5 segundos com as configurações acima e toca em seguida.</div>
+            </div>
+            <div class="test-actions">
+              <button id="btnTestRec" class="btn primary">● Gravar 5 s</button>
+              <button id="btnTestPlay" class="btn" disabled>▶ Ouvir</button>
+            </div>
+          </div>
+          <canvas class="meter test" id="testWave"></canvas>
+        </div>
+        <button id="btnDevices" class="btn ghost">Atualizar dispositivos</button>
+      </section>
+
+      <!-- WEBCAM -->
+      <section class="panel" id="panel-webcam">
+        <h2>Webcam junto com a tela</h2>
+        <label class="check big"><input type="checkbox" data-key="webcam"> Mostrar webcam na gravação</label>
+        <p class="hint">A webcam aparece numa janela flutuante na tela. <b>Arraste</b> para posicionar, use a <b>roda do mouse</b> ou o <b>canto inferior</b> para mudar o tamanho, a qualquer momento (inclusive gravando). Ela sai no vídeo exatamente onde estiver.</p>
+        <div class="split">
+          <div>
+            <div class="form">
+              <label>Câmera <select id="camDevice" data-key="webcamDeviceId"></select></label>
+              <label>Formato
+                <select data-key="webcamShape">
+                  <option value="circle">Círculo</option>
+                  <option value="rect">Retângulo</option>
+                </select>
+              </label>
+            </div>
+            <label class="range">Tamanho <input type="range" min="100" max="1000" step="10" data-key="webcamWidth"><output data-for="webcamWidth" data-unit="px"></output></label>
+            <label class="check"><input type="checkbox" data-key="webcamMirror"> Espelhar imagem</label>
+            <label class="check"><input type="checkbox" data-key="webcamBlur"> Desfocar o fundo (sem tela verde)</label>
+            <label class="range">Intensidade <input type="range" min="4" max="30" step="1" data-key="webcamBlurStrength"><output data-for="webcamBlurStrength" data-unit=""></output></label>
+          </div>
+          <div>
+            <div class="area-title">Posicionar rapidamente</div>
+            <p class="hint">Dentro da tela ou da área que está sendo gravada.</p>
+            <div class="pad" id="camPad">
+              <button data-corner="tl" title="Superior esquerdo"></button>
+              <button data-corner="tr" title="Superior direito"></button>
+              <button data-corner="c" title="Centro"></button>
+              <button data-corner="bl" title="Inferior esquerdo"></button>
+              <button data-corner="br" title="Inferior direito"></button>
+            </div>
+          </div>
+        </div>
+        <h3>No modo Janela</h3>
+        <p class="hint">Na gravação de uma janela específica a webcam é inserida direto no vídeo, no canto escolhido.</p>
+        <div class="form">
+          <label>Canto
+            <select data-key="webcamPos">
+              <option value="tl">Superior esquerdo</option>
+              <option value="tr">Superior direito</option>
+              <option value="bl">Inferior esquerdo</option>
+              <option value="br">Inferior direito</option>
+            </select>
+          </label>
+          <label class="range">Tamanho <input type="range" min="10" max="50" step="1" data-key="webcamSize"><output data-for="webcamSize"></output></label>
+        </div>
+      </section>
+
+      <!-- DESENHO -->
+      <section class="panel" id="panel-draw">
+        <h2>Desenho na tela</h2>
+        <p class="hint">Desenhe, marque e destaque enquanto grava. Os traços aparecem no vídeo; a barra de ferramentas não.</p>
+        <button id="btnDrawPanel" class="btn primary">Abrir ferramentas de desenho</button>
+        <ul class="keys" id="drawKeys"></ul>
+        <h3>Efeitos do mouse</h3>
+        <label class="check"><input type="checkbox" data-key="clickEffects"> Mostrar efeito ao clicar (esquerdo amarelo, direito vermelho)</label>
+        <p class="hint warn" id="hookWarn" hidden>O módulo <code>uiohook-napi</code> não está instalado, então os efeitos de clique ficam desativados. Rode <code>npm install</code> novamente.</p>
+        <h3>Teclas pressionadas</h3>
+        <label class="check"><input type="checkbox" data-key="keysShow"> Mostrar no vídeo as teclas e atalhos usados durante a gravação</label>
+        <div class="form">
+          <label>Posição
+            <select data-key="keysPos">
+              <option value="bc">Embaixo, no centro</option>
+              <option value="bl">Embaixo, à esquerda</option>
+              <option value="br">Embaixo, à direita</option>
+              <option value="tc">Em cima, no centro</option>
+              <option value="tl">Em cima, à esquerda</option>
+              <option value="tr">Em cima, à direita</option>
+            </select>
+          </label>
+          <label>Tamanho
+            <select data-key="keysSize">
+              <option value="s">Pequeno</option>
+              <option value="m">Médio</option>
+              <option value="l">Grande</option>
+            </select>
+          </label>
+          <label>Tempo na tela
+            <select data-key="keysDuration" data-num>
+              <option value="1">1 segundo</option>
+              <option value="1.5">1,5 segundo</option>
+              <option value="2.5">2,5 segundos</option>
+              <option value="4">4 segundos</option>
+            </select>
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" data-key="keysCombosOnly"> Mostrar só atalhos (Ctrl, Alt, Win + tecla), nunca o que é digitado</label>
+        <p class="hint">Dica: ative a opção acima ao digitar senhas durante a gravação.</p>
+        <p class="hint">Desenho, efeitos de clique e teclas aparecem nos modos Tela inteira e Área.</p>
+      </section>
+
+      <!-- ATALHOS -->
+      <section class="panel" id="panel-hotkeys">
+        <h2>Atalhos de teclado</h2>
+        <p class="hint">Clique no campo e pressione a nova combinação. Teclas comuns precisam de Ctrl, Alt ou Shift. Backspace remove o atalho.</p>
+        <div id="hotkeyList" class="hotkeys"></div>
+        <button id="btnResetHotkeys" class="btn ghost">Restaurar padrão</button>
+      </section>
+
+      <!-- AGENDAMENTO -->
+      <section class="panel" id="panel-schedule">
+        <h2>Gravação agendada</h2>
+        <p class="hint">O gravador precisa estar aberto (pode ficar na bandeja). Usa o modo e as configurações atuais.</p>
+        <div class="sched-form">
+          <label>Início <input type="datetime-local" id="schStart"></label>
+          <label>Duração (min) <input type="number" id="schDur" min="1" max="1440" value="30"></label>
+          <button id="btnAddSched" class="btn primary">Agendar</button>
+        </div>
+        <div id="schedList" class="list"></div>
+      </section>
+
+      <!-- SOBRE -->
+      <section class="panel" id="panel-about">
+        <div class="about">
+          <img class="about-icon" src="../assets/icon.png" alt="RecFlow">
+          <div>
+            <h1>RecFlow</h1>
+            <div class="about-ver" id="appVersion">Versão</div>
+            <p class="hint">Gravador de tela com editor de vídeo para Windows.</p>
+          </div>
+        </div>
+        <div class="card about-card">
+          <div class="about-row"><span>Desenvolvedor</span><b>Hendell A. Cardoso</b></div>
+          <div class="about-row"><span>E-mail</span><a href="#" data-link="mailto:suporte@api2dev.com.br">suporte@api2dev.com.br</a></div>
+          <div class="about-row"><span>WhatsApp</span><a href="#" data-link="https://wa.me/5562993148955">(62) 9.9314-8955</a></div>
+          <div class="about-row"><span>Website</span><a href="#" data-link="https://api2dev.com.br">https://api2dev.com.br</a></div>
+        </div>
+      </section>
+
+      <!-- ARQUIVOS -->
+      <section class="panel" id="panel-files">
+        <div class="panel-head">
+          <h2>Arquivos</h2>
+          <div>
+            <button id="btnFilesRefresh" class="btn ghost">Atualizar</button>
+            <button id="btnOpenProject" class="btn">Abrir projeto…</button>
+            <button id="btnFilesFolder" class="btn">Abrir pasta</button>
+          </div>
+        </div>
+        <div id="fileList" class="list"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="blur.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

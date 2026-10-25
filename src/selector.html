@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>GT Selecao</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; cursor: crosshair; font: 13px "Segoe UI", sans-serif; user-select: none; }
+    canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; }
+    .help {
+      position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+      background: #1b1e25ee; color: #e7e9ee; padding: 9px 16px; border-radius: 10px; pointer-events: none;
+    }
+    .bar {
+      position: fixed; display: none; gap: 6px; background: #1b1e25f2; padding: 6px; border-radius: 10px;
+      box-shadow: 0 6px 24px #0009; cursor: default;
+    }
+    .bar.show { display: flex; }
+    .bar button, .bar select {
+      border: 1px solid #2d323d; background: #22262f; color: #e7e9ee; border-radius: 7px; padding: 6px 12px;
+      font: 13px "Segoe UI", sans-serif; cursor: pointer;
+    }
+    .bar button.primary { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div class="help" id="help">Arraste para selecionar a área · Enter confirma · Esc cancela</div>
+  <div class="bar" id="bar">
+    <select id="preset" title="Tamanho fixo">
+      <option value="">Tamanho…</option>
+      <option value="full">Tela inteira</option>
+      <option value="1920x1080">1920 × 1080</option>
+      <option value="1280x720">1280 × 720</option>
+      <option value="854x480">854 × 480</option>
+      <option value="1080x1920">1080 × 1920 (vertical)</option>
+    </select>
+    <button id="redo">Refazer</button>
+    <button id="cancel">Cancelar</button>
+    <button id="ok" class="primary">Confirmar</button>
+  </div>
+  <script src="selector.js"></script>
+</body>
+</html>

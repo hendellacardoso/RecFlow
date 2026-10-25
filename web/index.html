@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RecFlow — Gravador de tela com editor de vídeo para Windows</title>
+  <meta name="description" content="Grave a tela, a webcam e o áudio do Windows, desenhe durante a gravação e edite com cortes, zoom, textos e desenhos. Exporte em MP4, para WhatsApp ou GIF.">
+  <meta property="og:title" content="RecFlow — Gravador de tela com editor de vídeo">
+  <meta property="og:description" content="Grave, edite e compartilhe sua tela em minutos.">
+  <meta property="og:image" content="img/og-image.jpg">
+  <meta name="theme-color" content="#0b0f1a">
+  <link rel="icon" type="image/png" href="img/favicon.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip" href="#conteudo">Pular para o conteúdo</a>
+
+  <!-- Cabeçalho -->
+  <header class="header" id="topo">
+    <div class="container header-in">
+      <a class="brand" href="#inicio" aria-label="RecFlow — início">
+        <img src="img/icon.png" alt="" width="34" height="34">
+        <span>RecFlow</span>
+      </a>
+      <nav class="nav" id="nav" aria-label="Principal">
+        <a href="#recursos">Recursos</a>
+        <a href="#telas">Telas</a>
+        <a href="#editor">Editor</a>
+        <a href="#como-funciona">Como funciona</a>
+        <a href="#download">Download</a>
+        <a href="#faq">Dúvidas</a>
+        <a href="#contato">Contato</a>
+      </nav>
+      <div class="header-actions">
+        <button class="icon-btn" id="themeToggle" type="button" aria-label="Alternar tema claro/escuro" title="Tema claro/escuro">
+          <svg class="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          <svg class="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>
+        </button>
+        <a class="btn btn-primary btn-sm hide-sm" href="#download">Baixar</a>
+        <button class="icon-btn menu-btn" id="menuBtn" type="button" aria-label="Abrir menu" aria-expanded="false" aria-controls="nav">
+          <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="conteudo">
+    <!-- Hero -->
+    <section class="hero" id="inicio">
+      <div class="container hero-in">
+        <div class="hero-text reveal">
+          <span class="eyebrow"><span class="rec-dot"></span> Gravador de tela + editor para Windows</span>
+          <h1>Grave, edite e compartilhe sua tela <span class="grad">em minutos</span>.</h1>
+          <p class="lead">Tela, webcam e áudio na mesma gravação. Desenhe, mostre os atalhos que você usa e, quando parar, corte, dê zoom e escreva no vídeo, tudo no mesmo programa.</p>
+          <div class="hero-cta">
+            <a class="btn btn-primary btn-lg" href="#download" data-download>
+              <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+              Baixar para Windows
+            </a>
+            <a class="btn btn-ghost btn-lg" href="#telas">Ver as telas</a>
+          </div>
+          <ul class="hero-meta">
+            <li>Windows 10 e 11 · 64 bits</li>
+            <li>Versão <span data-version>1.0.0</span></li>
+            <li>IA local, sem internet</li>
+          </ul>
+        </div>
+        <div class="hero-shot reveal">
+          <figure class="frame frame-main" data-open="editor">
+            <img src="img/editor.webp" alt="Editor do RecFlow com linha do tempo, zoom, texto e desenho" width="1600" height="1000" fetchpriority="high">
+          </figure>
+          <figure class="frame frame-float" data-open="inicio-gravando">
+            <img src="img/inicio-gravando-thumb.webp" alt="RecFlow gravando a tela" width="640" height="400">
+            <figcaption><span class="rec-dot"></span> Gravando · 00:03:29</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Números -->
+    <section class="strip">
+      <div class="container strip-in">
+        <div><b>4</b><span>modos de gravação</span></div>
+        <div><b>60 fps</b><span>em MP4 H.264</span></div>
+        <div><b>3</b><span>formatos de exportação</span></div>
+        <div><b>100%</b><span>local, sem nuvem</span></div>
+      </div>
+    </section>
+
+    <!-- Recursos -->
+    <section class="section" id="recursos">
+      <div class="container">
+        <header class="section-head reveal">
+          <span class="eyebrow">Recursos</span>
+          <h2>Tudo o que você precisa para gravar bem</h2>
+          <p>Do tutorial rápido à aula completa: o RecFlow cuida da gravação, do áudio e da edição.</p>
+        </header>
+        <div class="features" id="features"></div>
+      </div>
+    </section>
+
+    <!-- Galeria -->
+    <section class="section alt" id="telas">
+      <div class="container">
+        <header class="section-head reveal">
+          <span class="eyebrow">Telas</span>
+          <h2>Conheça o RecFlow por dentro</h2>
+          <p>Prints reais do programa. Clique para ampliar e use as setas para navegar.</p>
+        </header>
+        <div class="tabs" role="tablist" id="galleryTabs"></div>
+        <div class="gallery" id="gallery"></div>
+      </div>
+    </section>
+
+    <!-- Editor -->
+    <section class="section" id="editor">
+      <div class="container split">
+        <div class="split-text reveal">
+          <span class="eyebrow">Editor</span>
+          <h2>Parou de gravar? O editor já abre.</h2>
+          <p>Revise quadro a quadro e deixe o vídeo pronto sem precisar de outro programa.</p>
+          <ul class="checks">
+            <li><b>Cortar</b> o início, o fim e trechos do meio</li>
+            <li><b>Zoom animado</b> em qualquer área da tela, com entrada e saída suaves</li>
+            <li><b>Textos e desenhos</b> com cor, fundo e tempo na tela</li>
+            <li><b>Linha do tempo</b> com miniaturas e forma de onda do áudio</li>
+            <li><b>Desfazer e refazer</b> ilimitados</li>
+            <li><b>Projetos</b> (.gtproj) para continuar a edição depois</li>
+          </ul>
+          <div class="chips">
+            <span class="chip">MP4 · 3 qualidades</span>
+            <span class="chip">WhatsApp / e-mail</span>
+            <span class="chip">GIF animado</span>
+          </div>
+        </div>
+        <div class="split-media reveal">
+          <div class="switcher" role="tablist" aria-label="Exemplos do editor">
+            <button class="on" data-swap="editor" role="tab" aria-selected="true">Texto e desenho</button>
+            <button data-swap="editor-zoom" role="tab" aria-selected="false">Zoom em área</button>
+            <button data-swap="editor-exportar" role="tab" aria-selected="false">Exportar</button>
+            <button data-swap="editor-claro" role="tab" aria-selected="false">Tema claro</button>
+          </div>
+          <figure class="frame" id="editorFrame" data-open="editor">
+            <img id="editorImg" src="img/editor.webp" alt="Editor do RecFlow" width="1600" height="1000" loading="lazy">
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Destaques durante a gravação -->
+    <section class="section alt">
+      <div class="container split reverse">
+        <div class="split-text reveal">
+          <span class="eyebrow">Durante a gravação</span>
+          <h2>Explique enquanto grava</h2>
+          <p>Desenhe setas e círculos por cima de qualquer programa, destaque cliques do mouse e mostre no vídeo os atalhos que você usa. A barra de ferramentas não aparece na gravação.</p>
+          <ul class="checks">
+            <li><b>Caneta, marca-texto, seta, retângulo e elipse</b></li>
+            <li><b>Teclas pressionadas</b> com posição, tamanho e modo "só atalhos" para senhas</li>
+            <li><b>Contagem regressiva</b> de 3, 5 ou 10 segundos antes de começar</li>
+            <li><b>Webcam flutuante</b> que você arrasta a qualquer momento, com fundo desfocado</li>
+          </ul>
+        </div>
+        <div class="split-media reveal">
+          <figure class="frame" data-open="desenho-teclas-video">
+            <img src="img/desenho-teclas-video.webp" alt="Desenho na tela e teclas pressionadas aparecendo no vídeo" width="1600" height="900" loading="lazy">
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Como funciona -->
+    <section class="section" id="como-funciona">
+      <div class="container">
+        <header class="section-head reveal">
+          <span class="eyebrow">Como funciona</span>
+          <h2>Três passos, do clique ao vídeo pronto</h2>
+        </header>
+        <ol class="steps">
+          <li class="reveal">
+            <span class="step-n">1</span>
+            <h3>Escolha o que gravar</h3>
+            <p>Tela inteira, uma área, uma janela ou só a webcam. Ligue o som do sistema e o microfone e confira tudo no gráfico de áudio.</p>
+          </li>
+          <li class="reveal">
+            <span class="step-n">2</span>
+            <h3>Aperte F12</h3>
+            <p>A contagem começa e a gravação também. Pause com Shift+F12, desenhe com Ctrl+Shift+D e mova a webcam quando quiser.</p>
+          </li>
+          <li class="reveal">
+            <span class="step-n">3</span>
+            <h3>Edite e exporte</h3>
+            <p>Ao parar, o editor abre com o vídeo. Corte, aplique zoom, escreva e exporte em MP4, para WhatsApp ou como GIF.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- Download -->
+    <section class="section download" id="download">
+      <div class="container">
+        <div class="dl-card reveal">
+          <img class="dl-icon" src="img/icon.png" alt="" width="120" height="120">
+          <div class="dl-body">
+            <span class="eyebrow">Download</span>
+            <h2>Baixe o RecFlow</h2>
+            <p>Instalador para Windows 10 e 11 (64 bits) · versão <b data-version>1.0.0</b></p>
+            <div class="dl-actions">
+              <a class="btn btn-primary btn-lg" id="dlMain" href="#" data-download>
+                <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+                Baixar instalador (.exe)
+              </a>
+              <a class="btn btn-ghost btn-lg" id="dlSource" href="#">Código-fonte (.zip)</a>
+            </div>
+            <p class="small muted" id="dlNote">Ao abrir pela primeira vez, o Windows SmartScreen pode mostrar um aviso. Clique em <b>Mais informações → Executar assim mesmo</b>.</p>
+          </div>
+        </div>
+        <div class="reqs reveal">
+          <div><h3>Requisitos</h3><ul><li>Windows 10 (versão 2004 ou mais recente) ou Windows 11, 64 bits</li><li>4 GB de RAM (8 GB recomendado para 1080p a 60 fps)</li><li>Cerca de 400 MB livres para instalar</li></ul></div>
+          <div><h3>Incluído</h3><ul><li>Gravador, editor e projetos</li><li>FFmpeg para exportar os vídeos</li><li>IA local para ruído e desfoque, sem internet</li></ul></div>
+          <div><h3>Para desenvolvedores</h3><ul><li>Electron, HTML, CSS e JavaScript</li><li><code>npm install</code> e <code>npm start</code></li><li><a href="#" id="dlRepo">Repositório no GitHub</a></li></ul></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section alt" id="faq">
+      <div class="container narrow">
+        <header class="section-head reveal">
+          <span class="eyebrow">Dúvidas</span>
+          <h2>Perguntas frequentes</h2>
+        </header>
+        <div class="faq" id="faqList"></div>
+      </div>
+    </section>
+
+    <!-- Contato -->
+    <section class="section" id="contato">
+      <div class="container">
+        <div class="contact reveal">
+          <div>
+            <span class="eyebrow">Contato</span>
+            <h2>Fale com o desenvolvedor</h2>
+            <p>Dúvidas, sugestões ou suporte: é só chamar.</p>
+          </div>
+          <div class="contact-card">
+            <div class="contact-row"><span>Desenvolvedor</span><b>Hendell A. Cardoso</b></div>
+            <a class="contact-row" href="mailto:suporte@api2dev.com.br"><span>E-mail</span><b>suporte@api2dev.com.br</b></a>
+            <a class="contact-row" href="https://wa.me/5562993148955" target="_blank" rel="noopener"><span>WhatsApp</span><b>(62) 9.9314-8955</b></a>
+            <a class="contact-row" href="https://api2dev.com.br" target="_blank" rel="noopener"><span>Website</span><b>api2dev.com.br</b></a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-in">
+      <div class="brand"><img src="img/icon.png" alt="" width="26" height="26"><span>RecFlow</span></div>
+      <p>© <span id="year">2026</span> Hendell A. Cardoso · <a href="https://api2dev.com.br" target="_blank" rel="noopener">api2dev.com.br</a></p>
+      <a href="#inicio" class="to-top">Voltar ao topo ↑</a>
+    </div>
+  </footer>
+
+  <!-- Visualizador de imagens -->
+  <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Visualizar imagem" hidden>
+    <button class="lb-close" id="lbClose" aria-label="Fechar">✕</button>
+    <button class="lb-nav lb-prev" id="lbPrev" aria-label="Anterior">‹</button>
+    <figure class="lb-figure">
+      <img id="lbImg" alt="">
+      <figcaption><b id="lbTitle"></b><span id="lbText"></span><em id="lbCount"></em></figcaption>
+    </figure>
+    <button class="lb-nav lb-next" id="lbNext" aria-label="Próxima">›</button>
+  </div>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

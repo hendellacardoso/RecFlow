@@ -1,0 +1,17 @@
+# Dependências e builds (recriados com npm install / npm run dist)
+node_modules/
+dist/
+out/
+
+# Logs e temporários
+*.log
+npm-debug.log*
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Gravações e projetos de teste que estejam na pasta
+*.mp4
+*.webm
+*.gif
+*.gtproj

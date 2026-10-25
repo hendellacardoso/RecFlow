@@ -1,0 +1,65 @@
+{
+  "name": "recflow",
+  "productName": "RecFlow",
+  "version": "1.0.0",
+  "description": "RecFlow: gravador de tela para Windows com editor de vídeo",
+  "main": "main.js",
+  "author": "Hendell A. Cardoso <suporte@api2dev.com.br>",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "@mediapipe/tasks-vision": "^1.1.1",
+    "@sapphi-red/web-noise-suppressor": "^0.4.1"
+  },
+  "optionalDependencies": {
+    "uiohook-napi": "^1.5.4"
+  },
+  "devDependencies": {
+    "electron": "^44.8.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "br.com.api2dev.recflow",
+    "productName": "RecFlow",
+    "npmRebuild": false,
+    "asarUnpack": [
+      "node_modules/uiohook-napi/**",
+      "node_modules/ffmpeg-static/**"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*",
+      "!assets/icon2.png",
+      "!web/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "RecFlow",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "artifactName": "RecFlow-Setup.${ext}"
+    },
+    "fileAssociations": [
+      {
+        "ext": "gtproj",
+        "name": "Projeto RecFlow",
+        "description": "Projeto RecFlow",
+        "role": "Editor",
+        "icon": "assets/icon.ico"
+      }
+    ],
+    "copyright": "© Hendell A. Cardoso — api2dev.com.br"
+  },
+  "homepage": "https://api2dev.com.br"
+}
