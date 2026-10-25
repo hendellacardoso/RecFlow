@@ -1,16 +1,8 @@
 'use strict';
 /* =====================================================================
  * RecFlow — site de apresentação
- * Ajuste aqui os links de download.
  * ===================================================================== */
-const CONFIG = {
-  version: '1.0.0',
-  // Instalador: publique o arquivo dist/RecFlow-Setup.exe em uma Release do GitHub
-  // (ou troque por outro endereço, ex.: 'download/RecFlow-Setup.exe' se hospedar junto com o site)
-  downloadUrl: 'https://github.com/hendellacardoso/gravacao-video/releases/latest/download/RecFlow-Setup.exe',
-  sourceUrl: 'https://github.com/hendellacardoso/gravacao-video/archive/refs/heads/main.zip',
-  repoUrl: 'https://github.com/hendellacardoso/gravacao-video'
-};
+const CONFIG = { version: '1.0.0' };
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -170,18 +162,132 @@ const FAQ = [
   ['Onde ficam os vídeos?', 'Por padrão, em Vídeos\\RecFlow. Você pode trocar a pasta na aba Vídeo e ver tudo na aba Arquivos.'],
   ['Posso continuar uma edição depois?', 'Sim. No editor, use Salvar projeto (Ctrl+S). O arquivo .gtproj abre com duplo clique quando o RecFlow está instalado.'],
   ['Como mostro as teclas sem expor senhas?', 'Na aba Desenho e teclas, ative "Mostrar só atalhos". Assim só aparecem combinações com Ctrl, Alt ou Win, nunca o texto digitado.'],
-  ['O Windows mostrou um aviso ao instalar. É normal?', 'Sim. O SmartScreen avisa sobre programas novos sem assinatura digital. Clique em "Mais informações" e depois em "Executar assim mesmo".']
+  ['Consigo gravar só uma parte da tela?', 'Sim. No modo Área, arraste um retângulo em qualquer monitor. Há tamanhos prontos (1920×1080, 1280×720, vertical 1080×1920) e uma borda vermelha mostra o que está sendo gravado.'],
+  ['Tenho dois monitores. Funciona?', 'Funciona. Escolha o monitor no modo Tela inteira, ou selecione a área no monitor que quiser: a seleção abre em todas as telas ao mesmo tempo.'],
+  ['A janela do RecFlow aparece no vídeo?', 'Não, com a opção "Ocultar a janela do gravador no vídeo" ligada (padrão). A barra de desenho, a borda da área e a contagem também ficam de fora.'],
+  ['Os desenhos aparecem quando gravo uma janela?', 'Não. No modo Janela é gravado só o conteúdo daquela janela. Desenho, teclas e efeitos de clique aparecem nos modos Tela inteira e Área.'],
+  ['Existe limite de duração?', 'Não há limite definido pelo programa: o vídeo vai sendo salvo no disco enquanto você grava, então o limite é o espaço livre. Na qualidade Média, cada minuto ocupa cerca de 60 MB.'],
+  ['O que acontece se eu fechar a janela durante a gravação?', 'O RecFlow continua gravando na bandeja do sistema. Pelo ícone da bandeja você para, pausa ou captura imagens.'],
+  ['A gravação agendada funciona com o computador desligado?', 'Não. O RecFlow precisa estar aberto (pode estar minimizado na bandeja) no horário marcado.'],
+  ['Qual formato devo usar para enviar pelo WhatsApp?', 'No editor, escolha "WhatsApp / e-mail". O vídeo sai em até 720p e com cerca de 15 MB no total, tamanho aceito pela maioria dos aplicativos e e-mails.']
 ];
 $('#faqList').innerHTML = FAQ.map(([q, a], i) => `<details class="reveal"${i === 0 ? ' open' : ''}><summary>${q}</summary><p>${a}</p></details>`).join('');
 
-/* ---------------- Download ---------------- */
 $$('[data-version]').forEach((el) => { el.textContent = CONFIG.version; });
-$$('[data-download]').forEach((a) => {
-  if (a.id === 'dlMain') a.href = CONFIG.downloadUrl;
+
+/* ---------------- Guia de uso ---------------- */
+const GUIDE = [
+  { id: 'gravar', t: 'Gravar a tela', img: 'inicio-gravando',
+    intro: 'Escolha o que gravar na barra de cima e aperte REC (ou F12).',
+    steps: [
+      '<b>Tela inteira:</b> clique no monitor que deve ser gravado.',
+      '<b>Área:</b> arraste um retângulo em qualquer monitor; Enter confirma e Esc cancela.',
+      '<b>Janela:</b> escolha a janela na lista. A gravação acompanha a janela mesmo se ela for movida.',
+      '<b>Webcam:</b> grava só a câmera, com o microfone se estiver ativado.',
+      'Durante a gravação, o tempo, o tamanho do arquivo e o nível do áudio aparecem no topo. Shift+F12 pausa.'
+    ],
+    tip: 'Fechar a janela não interrompe a gravação: o RecFlow continua na bandeja do sistema.' },
+  { id: 'audio', t: 'Áudio', img: 'audio',
+    intro: 'Grave o som do computador e o microfone juntos, cada um com seu volume.',
+    steps: [
+      'Na aba <b>Áudio</b>, ative <b>Som do sistema</b> e/ou <b>Microfone</b>.',
+      'Os gráficos mostram o sinal em tempo real. "Saturando!" em vermelho indica volume alto demais.',
+      'Escolha a <b>redução de ruído</b>: Padrão, ou Forte para ventilador, teclado e ruído de fundo.',
+      'Clique em <b>Gravar 5 s</b> para gravar um trecho de teste e ouvir como ficou.'
+    ],
+    tip: 'Durante a gravação, você ainda pode ajustar o volume de cada fonte.' },
+  { id: 'webcam', t: 'Webcam', img: 'webcam',
+    intro: 'A webcam aparece numa janela flutuante e sai no vídeo exatamente onde estiver.',
+    steps: [
+      'Ative pela aba <b>Webcam</b>, pelo botão de câmera no topo ou com <b>Ctrl+Shift+W</b>.',
+      '<b>Arraste</b> para mudar de lugar; use a <b>roda do mouse</b> ou o canto inferior para mudar o tamanho.',
+      'Escolha círculo ou retângulo, espelhe a imagem e use os botões de <b>posição rápida</b>.',
+      'Marque <b>Desfocar o fundo</b> para esconder o ambiente sem tela verde.'
+    ],
+    tip: 'No modo Área, se a webcam estiver fora da área, ela vai sozinha para o canto ao começar a gravar.' },
+  { id: 'desenho', t: 'Desenho e teclas', img: 'desenho-teclas-video',
+    intro: 'Explique enquanto grava, desenhando por cima de qualquer programa.',
+    steps: [
+      'Aperte <b>Ctrl+Shift+D</b> para abrir as ferramentas de desenho.',
+      'Use caneta, marca-texto, linha, seta, retângulo, elipse ou borracha, com cores e espessuras.',
+      '<b>Ctrl+Z</b> desfaz o último traço, <b>Ctrl+Shift+X</b> limpa tudo e <b>Esc</b> sai do modo desenho.',
+      'Na aba <b>Desenho e teclas</b>, ative os efeitos de clique e a exibição das teclas pressionadas.'
+    ],
+    tip: 'Ao digitar senhas, ative "Mostrar só atalhos": aparecem apenas combinações com Ctrl, Alt ou Win.' },
+  { id: 'editor', t: 'Editar o vídeo', img: 'editor',
+    intro: 'Ao parar a gravação, o editor abre com o vídeo (ou use Editar na aba Arquivos).',
+    steps: [
+      '<b>Cortar:</b> I e O marcam início e fim; X remove um trecho a partir do ponto atual.',
+      '<b>Zoom:</b> com a ferramenta Zoom (Z), arraste um retângulo sobre a área a ampliar.',
+      '<b>Texto:</b> com a ferramenta Texto (T), clique no vídeo e escreva; arraste para posicionar.',
+      '<b>Desenho:</b> com a ferramenta Desenho (D), risque setas e formas sobre o vídeo.',
+      'Cada item vira um bloco na linha do tempo: arraste para mover e estique pelas bordas para mudar a duração.'
+    ],
+    tip: 'A linha do tempo mostra miniaturas e a forma de onda do áudio, e pode ser aproximada para ajustes finos.' },
+  { id: 'exportar', t: 'Exportar e projetos', img: 'editor-exportar',
+    intro: 'Escolha o formato ao lado do botão Exportar e acompanhe o progresso.',
+    steps: [
+      '<b>MP4</b> em alta qualidade, normal ou arquivo menor.',
+      '<b>WhatsApp / e-mail:</b> até 720p e cerca de 15 MB no total.',
+      '<b>GIF animado:</b> ideal para trechos curtos em documentação e chats.',
+      '<b>Salvar projeto (Ctrl+S)</b> guarda cortes, zooms, textos e desenhos num arquivo .gtproj para continuar depois.'
+    ],
+    tip: 'O vídeo original nunca é alterado: a exportação sempre cria um arquivo novo.' },
+  { id: 'extras', t: 'Logo, contagem e agenda', img: 'video-logo',
+    intro: 'Recursos para deixar as gravações com cara profissional.',
+    steps: [
+      '<b>Contagem regressiva</b> de 3, 5 ou 10 segundos antes de começar (aba Vídeo).',
+      '<b>Logo / marca d\'água</b> em todas as gravações, com posição, tamanho e opacidade.',
+      '<b>Gravação agendada</b> com data, hora e duração (aba Agendamento).',
+      '<b>Tema</b> claro, escuro ou igual ao Windows, usando a sua cor de destaque.'
+    ],
+    tip: 'Gravações agendadas começam sem contagem, no horário exato.' }
+];
+let guideIdx = 0;
+function renderGuide() {
+  $('#guideNav').innerHTML = GUIDE.map((g, i) =>
+    `<button role="tab" aria-selected="${i === guideIdx}" class="${i === guideIdx ? 'on' : ''}" data-g="${i}"><span>${String(i + 1).padStart(2, '0')}</span>${g.t}</button>`).join('');
+  $$('#guideNav button').forEach((b) => { b.onclick = () => { guideIdx = Number(b.dataset.g); renderGuide(); }; });
+  const g = GUIDE[guideIdx];
+  $('#guideBody').innerHTML = `
+    <div class="guide-text">
+      <h3>${g.t}</h3>
+      <p class="guide-intro">${g.intro}</p>
+      <ol class="guide-steps">${g.steps.map((x) => `<li>${x}</li>`).join('')}</ol>
+      <p class="guide-tip"><b>Dica:</b> ${g.tip}</p>
+    </div>
+    <figure class="frame" data-open="${g.img}"><img src="img/${g.img}.webp" alt="${g.t}" loading="lazy"></figure>`;
+}
+renderGuide();
+
+/* ---------------- Atalhos ---------------- */
+const KBD = {
+  kbdGlobal: [['F12', 'Iniciar / parar a gravação'], ['Shift+F12', 'Pausar / retomar'], ['F11', 'Capturar imagem (PNG)'],
+    ['Ctrl+Shift+D', 'Abrir / fechar o desenho'], ['Ctrl+Shift+X', 'Limpar os desenhos'], ['Ctrl+Shift+W', 'Mostrar / ocultar a webcam']],
+  kbdEditor: [['Espaço', 'Reproduzir / pausar'], ['← →', 'Quadro a quadro (Shift: 1 segundo)'], ['I / O', 'Marcar início / fim'],
+    ['X', 'Remover trecho'], ['Z · T · D · V', 'Zoom · Texto · Desenho · Selecionar'], ['Delete', 'Excluir o item selecionado'],
+    ['Ctrl+Z / Ctrl+Y', 'Desfazer / refazer'], ['Ctrl+S', 'Salvar projeto'], ['Ctrl+E', 'Exportar vídeo'], ['Ctrl+O', 'Abrir projeto']],
+  kbdDraw: [['Ctrl+Z', 'Desfazer o último traço'], ['Shift (arrastando)', 'Linha reta, quadrado ou círculo'], ['Esc', 'Sair do modo desenho'],
+    ['Enter', 'Confirmar a área (seleção)'], ['Esc', 'Cancelar a seleção de área']]
+};
+const kbd = (k) => k.split(/(\s[·/]\s)/).map((part) => (/\s[·/]\s/.test(part) ? `<span class="sep">${part.trim()}</span>` : part.split('+').map((x) => `<kbd>${x}</kbd>`).join('<span class="plus">+</span>'))).join('');
+Object.entries(KBD).forEach(([id, rows]) => {
+  $(`#${id}`).innerHTML = rows.map(([k, d]) => `<tr><td>${kbd(k)}</td><td>${d}</td></tr>`).join('');
 });
-$('#dlSource').href = CONFIG.sourceUrl;
-$('#dlRepo').href = CONFIG.repoUrl;
-$('#dlRepo').target = '_blank'; $('#dlRepo').rel = 'noopener';
+
+/* ---------------- Formatos ---------------- */
+const FORMATS = {
+  head: ['Formato', 'Resolução', 'Tamanho', 'Som', 'Melhor para'],
+  rows: [
+    ['MP4 · alta qualidade', 'Original', 'Maior', 'Sim', 'Arquivo final, YouTube, edição posterior'],
+    ['MP4 · normal', 'Original', 'Médio', 'Sim', 'Uso geral, aulas e tutoriais'],
+    ['MP4 · arquivo menor', 'Original', 'Menor', 'Sim', 'Guardar muitos vídeos, enviar por link'],
+    ['WhatsApp / e-mail', 'Até 720p', '~15 MB', 'Sim', 'Mensagens e anexos de e-mail'],
+    ['GIF animado', 'Até 960 px', 'Varia', 'Não', 'Trechos curtos em documentação e chats']
+  ]
+};
+$('#formatTable').innerHTML = `<thead><tr>${FORMATS.head.map((h) => `<th>${h}</th>`).join('')}</tr></thead>
+  <tbody>${FORMATS.rows.map((r) => `<tr>${r.map((c, i) => (i === 0 ? `<th scope="row">${c}</th>` : `<td>${c}</td>`)).join('')}</tr>`).join('')}</tbody>`;
 
 /* ---------------- Tema ---------------- */
 const root = document.documentElement;

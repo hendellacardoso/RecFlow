@@ -1,0 +1,5 @@
+Coloque aqui o instalador gerado pelo "npm run dist":
+
+  dist\RecFlow-Setup.exe  ->  web\download\RecFlow-Setup.exe
+
+O botao "Baixar instalador" do site aponta para este arquivo.

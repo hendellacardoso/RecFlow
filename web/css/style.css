@@ -205,17 +205,8 @@ p { margin: 0 0 1rem; }
   background: linear-gradient(135deg, var(--red), #e11d48); color: #fff; font-weight: 800; font-size: 18px;
 }
 
-/* Download */
-.download { background: radial-gradient(700px 300px at 50% 0%, rgba(255, 59, 48, .14), transparent 70%), var(--bg); }
-.dl-card {
-  display: flex; gap: 36px; align-items: center; background: var(--card); border: 1px solid var(--line);
-  border-radius: 24px; padding: 40px; box-shadow: var(--shadow);
-}
-.dl-icon { width: 120px; height: 120px; border-radius: 26px; flex: none; }
-.dl-body h2 { margin-bottom: .2em; }
-.dl-body > p { color: var(--muted); }
-.dl-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0 14px; }
-.reqs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 22px; }
+/* Requisitos */
+.reqs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
 .reqs > div { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 24px; }
 .reqs ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 15px; display: grid; gap: 6px; }
 .reqs a { color: var(--blue); }
@@ -276,6 +267,71 @@ a.contact-row:hover b { text-decoration: underline; }
   .rec-dot { animation: none; }
 }
 
+/* Guia de uso */
+.guide { display: grid; grid-template-columns: 260px 1fr; gap: 24px; align-items: start; }
+.guide-nav { display: flex; flex-direction: column; gap: 6px; position: sticky; top: calc(var(--header) + 16px); }
+.guide-nav button {
+  display: flex; align-items: center; gap: 12px; text-align: left; cursor: pointer; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid transparent; background: transparent; color: var(--muted); font-family: inherit; font-size: 15px; font-weight: 600;
+}
+.guide-nav button span { font-size: 12px; font-weight: 700; color: var(--muted); opacity: .7; font-variant-numeric: tabular-nums; }
+.guide-nav button:hover { background: var(--card); color: var(--text); }
+.guide-nav button.on { background: var(--card); color: var(--text); border-color: var(--line); box-shadow: inset 3px 0 0 var(--red); }
+.guide-nav button.on span { color: var(--red); opacity: 1; }
+.guide-body {
+  display: grid; grid-template-columns: 1fr 1.15fr; gap: 28px; align-items: center; background: var(--card);
+  border: 1px solid var(--line); border-radius: 20px; padding: 28px; animation: fadeIn .3s both;
+}
+.guide-intro { color: var(--muted); font-size: 1.05rem; }
+.guide-steps { margin: 0 0 16px; padding-left: 0; list-style: none; counter-reset: g; display: grid; gap: 10px; }
+.guide-steps li { counter-increment: g; position: relative; padding-left: 36px; color: var(--muted); }
+.guide-steps li b { color: var(--text); font-weight: 600; }
+.guide-steps li::before {
+  content: counter(g); position: absolute; left: 0; top: 1px; width: 24px; height: 24px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; background: linear-gradient(135deg, var(--red), #e11d48);
+}
+.guide-tip {
+  margin: 0; padding: 12px 14px; border-radius: 12px; font-size: 14.5px; color: var(--muted);
+  background: color-mix(in srgb, var(--blue) 10%, transparent); border: 1px solid color-mix(in srgb, var(--blue) 25%, transparent);
+}
+.guide-tip b { color: var(--text); }
+.guide-body .frame { box-shadow: 0 16px 40px rgba(0, 0, 0, .25); }
+
+/* Atalhos */
+.kbd-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; align-items: start; }
+.kbd-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 22px 10px; }
+.kbd-table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+.kbd-table td { padding: 9px 0; border-top: 1px solid var(--line); vertical-align: middle; }
+.kbd-table tr:first-child td { border-top: 0; }
+.kbd-table td:first-child { white-space: nowrap; padding-right: 14px; }
+.kbd-table td:last-child { color: var(--muted); }
+kbd {
+  display: inline-block; min-width: 26px; text-align: center; padding: 3px 8px; border-radius: 7px; font-family: inherit; font-weight: 600; font-size: 12.5px; line-height: 1.3; background: var(--card-2); border: 1px solid var(--line); border-bottom-width: 2px; color: var(--text);
+}
+.kbd-table .plus, .kbd-table .sep { color: var(--muted); margin: 0 4px; font-size: 12px; }
+
+/* Formatos */
+.table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--line); background: var(--card); }
+.cmp { width: 100%; border-collapse: collapse; min-width: 680px; font-size: 15px; }
+.cmp th, .cmp td { padding: 14px 18px; text-align: left; border-top: 1px solid var(--line); }
+.cmp thead th { border-top: 0; font-size: 12.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--card-2); }
+.cmp tbody th { font-weight: 650; white-space: nowrap; }
+.cmp td { color: var(--muted); }
+.cmp tbody tr:hover { background: var(--card-2); }
+.tips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 18px; }
+.tip { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; display: grid; gap: 4px; }
+.tip span { color: var(--muted); font-size: 14.5px; }
+
+@media (max-width: 1020px) {
+  .guide { grid-template-columns: 1fr; }
+  .guide-nav { position: static; flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
+  .guide-nav button { white-space: nowrap; }
+  .guide-nav button.on { box-shadow: inset 0 -3px 0 var(--red); }
+  .guide-body { grid-template-columns: 1fr; }
+  .kbd-grid, .tips { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) { .guide-body { padding: 18px; } }
+
 /* Responsivo */
 @media (max-width: 1020px) {
   .hero-in, .split, .contact { grid-template-columns: 1fr; }
@@ -294,8 +350,6 @@ a.contact-row:hover b { text-decoration: underline; }
   .nav.open { transform: none; box-shadow: 0 20px 40px rgba(0, 0, 0, .3); }
   .nav a { padding: 12px 14px; font-size: 16px; }
   .strip-in { grid-template-columns: repeat(2, 1fr); }
-  .dl-card { flex-direction: column; text-align: center; padding: 28px 20px; }
-  .dl-actions { justify-content: center; }
   .section { padding: 72px 0; }
   .lightbox { grid-template-columns: 1fr; padding: 60px 8px 24px; }
   .lb-nav { position: absolute; bottom: 20px; }
