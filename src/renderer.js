@@ -8,7 +8,7 @@ let hookAvailable = false;
 let sources = { screens: [], windows: [] };
 let session = null;               // recursos da gravação em andamento
 let starting = false;
-const state = { recording: false, paused: false, startedAt: 0, pausedAccum: 0, pauseStart: 0, bytes: 0, autoStopAt: null, file: null };
+const state = { recording: false, paused: false, startedAt: 0, pausedAccum: 0, pauseStart: 0, bytes: 0, partBytes: 0, partStart: 0, autoStopAt: null, file: null };
 
 const MODE_LABEL = { screen: 'Tela inteira', area: 'Área selecionada', window: 'Janela', webcam: 'Somente webcam' };
 const HOTKEY_LABEL = {
@@ -88,7 +88,9 @@ async function init() {
 
   bindSettings();
   bindUi();
+  setupNew();
   renderAll();
+  refreshRecovery();
   refreshSources();
   loadDevices();
   setInterval(tick, 250);
@@ -98,6 +100,7 @@ async function init() {
   api.on('set-paused', (p) => { if (state.recording && !!p !== state.paused) togglePause(); });
   api.on('manual:status', (st) => { renderManualStatus(st); if ($('#panel-manual').classList.contains('active')) refreshManuals(); });
   api.on('rec:force-stop', () => stopRecording());
+  api.on('rec:bytes', (b) => { if (state.recording) { state.partBytes = b; state.bytes = b + (state.prevPartsBytes || 0); } });
   api.on('schedule:start', async ({ stopAt }) => {
     if (state.recording) return;
     await startRecording({ noCountdown: true });
@@ -125,6 +128,9 @@ function renderAll() {
   $('#outputShort').textContent = S.outputDir;
   refreshWatermark();
   renderManual();
+  renderEngine();
+  renderLimits();
+  renderBrand();
   updateUI();
 }
 
@@ -169,6 +175,8 @@ function applyLive(k) {
     if (k === 'micVolume' && session.micGain) session.micGain.gain.value = S.micVolume / 100;
   }
   if (k === 'webcam') updateUI();
+  if (k === 'engine') { renderEngine(); if (S.engine === 'ffmpeg' && !S.hwEncoders) detectEncoders(); }
+  if (k === 'limitMode') renderLimits();
   if (k === 'wmOpacity') { const i = $('#wmPreview img'); if (i) i.style.opacity = String(S.wmOpacity / 100); }
   if (k === 'webcam' && state.recording && S.mode === 'window') toast('No modo Janela a webcam será aplicada na próxima gravação.');
 }
@@ -232,6 +240,8 @@ function showPanel(id) {
   if (id === 'home') refreshSources();
   if (id === 'files') refreshFiles();
   if (id === 'manual') renderManual();
+  if (id === 'ai') refreshAi();
+  if (id === 'brand') renderBrand();
   if (id === 'audio' || id === 'webcam') loadDevices();
   if (id === 'audio') startMonitor(); else if (!testing) stopMonitor();
 }
@@ -432,8 +442,54 @@ function drawWatermark(ctx, W, H, img) {
 }
 
 let counting = false;
+const MB = 1024 * 1024;
+const AUDIO_MIME = () => ['audio/webm;codecs=opus', 'audio/webm'].find((x) => MediaRecorder.isTypeSupported(x)) || '';
+
+// Um MediaRecorder que manda os pedaços para o disco (pelo processo principal), em ordem
+function makeRecorder(stream, opts, write, counts) {
+  const r = new MediaRecorder(stream, opts);
+  const rr = { r, chain: Promise.resolve() };
+  rr.stopped = new Promise((res) => { r.onstop = res; });
+  r.ondataavailable = (e) => {
+    if (!e.data || !e.data.size) return;
+    if (counts) { state.bytes += e.data.size; state.partBytes += e.data.size; }
+    const blob = e.data;
+    rr.chain = rr.chain.then(async () => write(await blob.arrayBuffer())).catch(() => {});
+  };
+  r.onerror = (e) => { toast(`Erro na gravação: ${e.error ? e.error.message : 'desconhecido'}`, true); stopRecording(); };
+  return rr;
+}
+// gravadores da sessão: vídeo (ou só áudio, no modo FFmpeg) + trilhas separadas
+function createRecorders(sess) {
+  const recs = {};
+  if (sess.engine === 'ffmpeg') {
+    if (sess.mixStream) recs.main = makeRecorder(sess.mixStream, { mimeType: AUDIO_MIME() || undefined, audioBitsPerSecond: 192000 }, (b) => api.recChunk(b), false);
+  } else {
+    recs.main = makeRecorder(sess.outStream, {
+      mimeType: sess.mime || undefined,
+      videoBitsPerSecond: Math.round(S.bitrate * 1e6),
+      audioBitsPerSecond: 192000,
+      videoKeyFrameIntervalDuration: 2000 // fragmentos a cada ~2s: o arquivo vai sendo gravado no disco
+    }, (b) => api.recChunk(b), true);
+  }
+  Object.entries(sess.trackStreams || {}).forEach(([name, st]) => {
+    recs[name] = makeRecorder(st, { mimeType: AUDIO_MIME() || undefined, audioBitsPerSecond: 160000 }, (b) => api.recTrackChunk(name, b), false);
+  });
+  return recs;
+}
+async function stopRecorders(sess) {
+  const list = Object.values(sess.recs || {});
+  list.forEach((rr) => { if (rr.r.state !== 'inactive') rr.r.stop(); });
+  await Promise.all(list.map((rr) => rr.stopped));
+  await Promise.all(list.map((rr) => rr.chain));
+}
+
 async function startRecording(opts = {}) {
   if (state.recording || starting || counting) return;
+  // espaço em disco
+  const free = await api.recDiskFree();
+  if (free != null && free < 500 * MB) { toast(`Espaço insuficiente no disco (${fmtBytes(free)} livres).`, true); return; }
+  if (free != null && free < 2048 * MB && !opts.continuation) toast(`Atenção: só ${fmtBytes(free)} livres no disco.`, true);
   // contagem regressiva antes de começar
   if (S.countdown > 0 && !opts.noCountdown) {
     counting = true; updateUI();
@@ -442,30 +498,33 @@ async function startRecording(opts = {}) {
     if (!ok) { toast('Gravação cancelada.'); return; }
   }
   starting = true;
-  const sess = { writeChain: Promise.resolve(), begun: false };
+  const sess = { begun: false, recs: {} };
   session = sess;
   try {
     const t = await api.captureTarget();
     if (t.error) throw new Error(t.error);
     const fps = Number(S.fps) || 30;
+    sess.engine = S.engine === 'ffmpeg' && (t.kind === 'screen' || t.kind === 'area') ? 'ffmpeg' : 'browser';
+    if (S.engine === 'ffmpeg' && sess.engine !== 'ffmpeg' && !opts.continuation) toast('A gravação pela placa de vídeo funciona em Tela inteira e Área; esta usa o modo padrão.');
 
-    // 1) Tela / janela (+ som do sistema)
+    // 1) Tela / janela (+ som do sistema). No modo FFmpeg só o som do sistema vem daqui
     if (t.kind !== 'webcam') {
-      const mandatory = { chromeMediaSource: 'desktop', chromeMediaSourceId: t.sourceId, maxFrameRate: fps };
-      if (t.width) Object.assign(mandatory, { minWidth: t.width, maxWidth: t.width, minHeight: t.height, maxHeight: t.height });
+      const mandatory = { chromeMediaSource: 'desktop', chromeMediaSourceId: t.sourceId, maxFrameRate: sess.engine === 'ffmpeg' ? 1 : fps };
+      if (sess.engine === 'ffmpeg') Object.assign(mandatory, { maxWidth: 320, maxHeight: 180 });
+      else if (t.width) Object.assign(mandatory, { minWidth: t.width, maxWidth: t.width, minHeight: t.height, maxHeight: t.height });
       else Object.assign(mandatory, { maxWidth: 3840, maxHeight: 2160 });
       const video = { mandatory };
       if (S.systemAudio) {
         try {
           sess.screenStream = await navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: 'desktop' } }, video });
         } catch {
-          sess.screenStream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
+          if (sess.engine !== 'ffmpeg') sess.screenStream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
           toast('Som do sistema indisponível; gravando sem ele.', true);
         }
-      } else {
+      } else if (sess.engine !== 'ffmpeg') {
         sess.screenStream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
       }
-      sess.screenVideo = await playStream(sess.screenStream);
+      if (sess.engine !== 'ffmpeg') sess.screenVideo = await playStream(sess.screenStream);
     }
 
     // 2) Webcam
@@ -492,65 +551,71 @@ async function startRecording(opts = {}) {
       try { sess.blur = await new window.BackgroundBlur().init(); }
       catch (e) { toast(`Desfoque indisponível: ${e.message}`, true); }
     }
-    // Logo / marca d'água
-    if (S.wmEnabled) {
+    // Logo / marca d'água (no modo FFmpeg ele é aplicado pelo próprio FFmpeg)
+    if (S.wmEnabled && sess.engine !== 'ffmpeg') {
       try { const url = await api.wmRead(); if (url) sess.wm = await loadImage(url); }
       catch { toast('Não foi possível carregar a imagem do logo.', true); }
     }
 
     // 4) Composição de vídeo
-    let videoTrack;
-    const needCanvas = t.kind === 'webcam' || !!t.crop || !!sess.camVideo || !!sess.wm;
-    if (!needCanvas) {
-      videoTrack = sess.screenStream.getVideoTracks()[0];
-    } else {
-      let W, H, src = null;
-      if (t.kind === 'webcam') { W = sess.camVideo.videoWidth; H = sess.camVideo.videoHeight; }
-      else {
-        const vw = sess.screenVideo.videoWidth, vh = sess.screenVideo.videoHeight;
-        src = t.crop
-          ? { x: Math.round(t.crop.x * vw), y: Math.round(t.crop.y * vh), w: Math.round(t.crop.w * vw), h: Math.round(t.crop.h * vh) }
-          : { x: 0, y: 0, w: vw, h: vh };
-        W = src.w; H = src.h;
-      }
-      W = even(W); H = even(H);
-      const canvas = document.createElement('canvas');
-      canvas.width = W; canvas.height = H;
-      const ctx = canvas.getContext('2d', { alpha: false });
-      const camSource = () => (sess.blur && S.webcamBlur ? sess.blur.process(sess.camVideo, S.webcamBlurStrength) : sess.camVideo);
-      const draw = () => {
-        if (t.kind === 'webcam') {
-          const cam = camSource();
-          if (S.webcamMirror) { ctx.save(); ctx.translate(W, 0); ctx.scale(-1, 1); ctx.drawImage(cam, 0, 0, W, H); ctx.restore(); }
-          else ctx.drawImage(cam, 0, 0, W, H);
-        } else {
-          ctx.drawImage(sess.screenVideo, src.x, src.y, src.w, src.h, 0, 0, W, H);
-          if (sess.camVideo) drawCam(ctx, W, H, camSource());
+    let videoTrack = null;
+    if (sess.engine !== 'ffmpeg') {
+      const needCanvas = t.kind === 'webcam' || !!t.crop || !!sess.camVideo || !!sess.wm;
+      if (!needCanvas) {
+        videoTrack = sess.screenStream.getVideoTracks()[0];
+      } else {
+        let W, H, src = null;
+        if (t.kind === 'webcam') { W = sess.camVideo.videoWidth; H = sess.camVideo.videoHeight; }
+        else {
+          const vw = sess.screenVideo.videoWidth, vh = sess.screenVideo.videoHeight;
+          src = t.crop
+            ? { x: Math.round(t.crop.x * vw), y: Math.round(t.crop.y * vh), w: Math.round(t.crop.w * vw), h: Math.round(t.crop.h * vh) }
+            : { x: 0, y: 0, w: vw, h: vh };
+          W = src.w; H = src.h;
         }
-        if (sess.wm && S.wmEnabled) drawWatermark(ctx, W, H, sess.wm);
-      };
-      draw();
-      sess.timer = setInterval(draw, 1000 / fps);
-      sess.canvas = canvas;
-      videoTrack = canvas.captureStream(fps).getVideoTracks()[0];
+        W = even(W); H = even(H);
+        const canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        const ctx = canvas.getContext('2d', { alpha: false });
+        const camSource = () => (sess.blur && S.webcamBlur ? sess.blur.process(sess.camVideo, S.webcamBlurStrength) : sess.camVideo);
+        const draw = () => {
+          if (t.kind === 'webcam') {
+            const cam = camSource();
+            if (S.webcamMirror) { ctx.save(); ctx.translate(W, 0); ctx.scale(-1, 1); ctx.drawImage(cam, 0, 0, W, H); ctx.restore(); }
+            else ctx.drawImage(cam, 0, 0, W, H);
+          } else {
+            ctx.drawImage(sess.screenVideo, src.x, src.y, src.w, src.h, 0, 0, W, H);
+            if (sess.camVideo) drawCam(ctx, W, H, camSource());
+          }
+          if (sess.wm && S.wmEnabled) drawWatermark(ctx, W, H, sess.wm);
+        };
+        draw();
+        sess.timer = setInterval(draw, 1000 / fps);
+        sess.canvas = canvas;
+        videoTrack = canvas.captureStream(fps).getVideoTracks()[0];
+      }
     }
     sess.videoTrack = videoTrack;
 
-    // 5) Mixagem de áudio
+    // 5) Mixagem de áudio (e trilhas separadas, se pedido)
     const audioTracks = [];
     const sysTrack = sess.screenStream && sess.screenStream.getAudioTracks()[0];
+    sess.trackStreams = {};
     if (sysTrack || sess.micStream) {
       const ac = new AudioContext({ sampleRate: 48000 });
       sess.audioCtx = ac;
       const dest = ac.createMediaStreamDestination();
+      const separate = S.separateTracks && sysTrack && sess.micStream;
       if (sysTrack) {
         sess.sysGain = ac.createGain(); sess.sysGain.gain.value = S.systemVolume / 100;
         ac.createMediaStreamSource(new MediaStream([sysTrack])).connect(sess.sysGain).connect(dest);
+        if (separate) { const d2 = ac.createMediaStreamDestination(); sess.sysGain.connect(d2); sess.trackStreams.sys = d2.stream; }
       }
       if (sess.micStream) {
         sess.micGain = ac.createGain(); sess.micGain.gain.value = S.micVolume / 100;
         await connectMic(ac, ac.createMediaStreamSource(sess.micStream), sess.micGain);
         sess.micGain.connect(dest);
+        if (separate) { const d2 = ac.createMediaStreamDestination(); sess.micGain.connect(d2); sess.trackStreams.mic = d2.stream; }
       }
       audioTracks.push(dest.stream.getAudioTracks()[0]);
       const an = ac.createAnalyser(); an.fftSize = 1024;
@@ -558,41 +623,40 @@ async function startRecording(opts = {}) {
       sess.vu = { an, buf: new Float32Array(an.fftSize) };
     }
 
-    // 6) Gravador
-    const out = new MediaStream([videoTrack, ...audioTracks]);
-    const { mime, ext } = pickMime(S.format);
-    if (S.format === 'mp4' && ext !== 'mp4') toast('MP4 não suportado nesta versão; gravando em WebM.', true);
-    const recorder = new MediaRecorder(out, {
-      mimeType: mime || undefined,
-      videoBitsPerSecond: Math.round(S.bitrate * 1e6),
-      audioBitsPerSecond: 192000,
-      videoKeyFrameIntervalDuration: 2000 // fragmentos a cada ~2s: o arquivo vai sendo gravado no disco
+    // 6) Gravadores
+    if (sess.engine === 'ffmpeg') {
+      sess.mixStream = audioTracks.length ? new MediaStream(audioTracks) : null;
+    } else {
+      sess.outStream = new MediaStream([videoTrack, ...audioTracks]);
+      const { mime, ext } = pickMime(S.format);
+      if (S.format === 'mp4' && ext !== 'mp4' && !opts.continuation) toast('MP4 não suportado nesta versão; gravando em WebM.', true);
+      sess.mime = mime; sess.ext = ext;
+    }
+    // no modo FFmpeg o processo principal só responde quando o 1º quadro foi gravado
+    const rb = await api.recBegin({
+      ext: sess.ext || 'mp4', displayId: t.displayId, engine: sess.engine, audio: !!sess.mixStream,
+      tracks: Object.keys(sess.trackStreams), continuation: !!opts.continuation
     });
-    sess.recorder = recorder;
-
-    state.file = await api.recBegin({ ext, displayId: t.displayId });
+    if (!rb || rb.error) throw new Error((rb && rb.error) || 'falha ao abrir o arquivo');
     sess.begun = true;
-
-    recorder.ondataavailable = (e) => {
-      if (!e.data || !e.data.size) return;
-      state.bytes += e.data.size;
-      const blob = e.data;
-      sess.writeChain = sess.writeChain.then(async () => api.recChunk(await blob.arrayBuffer())).catch(() => {});
-    };
-    recorder.onstop = () => finishRecording(sess);
-    recorder.onerror = (e) => { toast(`Erro na gravação: ${e.error ? e.error.message : 'desconhecido'}`, true); stopRecording(); };
+    state.file = rb.file;
+    sess.recs = createRecorders(sess);
 
     // Se a janela/tela capturada sumir, encerra
-    const srcTrack = sess.screenStream ? sess.screenStream.getVideoTracks()[0] : sess.camStream.getVideoTracks()[0];
-    srcTrack.addEventListener('ended', () => { toast('A fonte de captura foi encerrada.', true); stopRecording(); });
+    const srcTrack = sess.engine === 'ffmpeg' ? null : sess.screenStream ? sess.screenStream.getVideoTracks()[0] : sess.camStream.getVideoTracks()[0];
+    if (srcTrack) srcTrack.addEventListener('ended', () => { toast('A fonte de captura foi encerrada.', true); stopRecording(); });
 
-    recorder.start(1000);
-    Object.assign(state, { recording: true, paused: false, startedAt: performance.now(), pausedAccum: 0, bytes: 0, autoStopAt: null });
+    Object.values(sess.recs).forEach((rr) => rr.r.start(1000));
+    Object.assign(state, { recording: true, paused: false, startedAt: performance.now(), pausedAccum: 0, bytes: 0, partBytes: 0, partStart: 0, autoStopAt: null });
 
     const pv = $('#preview');
-    pv.srcObject = new MediaStream([videoTrack]);
-    pv.play().catch(() => {});
-    $('#previewEmpty').hidden = true;
+    if (videoTrack) {
+      pv.srcObject = new MediaStream([videoTrack]);
+      pv.play().catch(() => {});
+      $('#previewEmpty').hidden = true;
+    } else {
+      $('#previewEmpty').textContent = `Gravando pelo FFmpeg (${rb.encoder || 'placa de vídeo'}). A pré-visualização fica desligada para não pesar.`;
+    }
     requestAnimationFrame(vuLoop);
     updateUI();
   } catch (e) {
@@ -604,19 +668,49 @@ async function startRecording(opts = {}) {
   }
 }
 
-function stopRecording() {
-  if (!state.recording || !session || !session.recorder) return;
-  if (session.recorder.state !== 'inactive') session.recorder.stop();
+async function stopRecording(opts = {}) {
+  const sess = session;
+  if (!state.recording || !sess || sess.stopping) return;
+  sess.stopping = true;
+  await stopRecorders(sess);
+  await finishRecording(sess, opts);
 }
 
-async function finishRecording(sess) {
-  await sess.writeChain;
-  const file = await api.recEnd();
+async function finishRecording(sess, opts = {}) {
+  const file = await api.recEnd({ split: !!opts.split });
   cleanup(sess);
   Object.assign(state, { recording: false, paused: false, autoStopAt: null });
   updateUI();
   refreshFiles();
-  if (file) toast(`Vídeo salvo: ${file.split(/[\\/]/).pop()}`);
+  if (file && !opts.split) toast(`Vídeo salvo: ${file.split(/[\\/]/).pop()}`);
+}
+
+// Limite de tempo/tamanho: continua gravando num arquivo novo
+async function splitRecording() {
+  const sess = session;
+  if (!sess || sess.splitting || sess.stopping || !state.recording) return;
+  sess.splitting = true;
+  try {
+    if (sess.engine === 'ffmpeg') {
+      const autoStop = state.autoStopAt;
+      sess.stopping = true;
+      await stopRecorders(sess);
+      await finishRecording(sess, { split: true });
+      await startRecording({ noCountdown: true, continuation: true });
+      if (state.recording) state.autoStopAt = autoStop;
+      toast('Limite atingido: a gravação continua num arquivo novo.');
+      return;
+    }
+    await stopRecorders(sess);
+    const file = await api.recSplit();
+    if (!file) { stopRecording(); return; }
+    state.file = file;
+    sess.recs = createRecorders(sess);
+    Object.values(sess.recs).forEach((rr) => rr.r.start(1000));
+    if (state.paused) Object.values(sess.recs).forEach((rr) => rr.r.pause());
+    state.partStart = elapsed(); state.partBytes = 0;
+    toast(`Limite atingido: continuando em ${file.split(/[\\/]/).pop()}`);
+  } finally { sess.splitting = false; }
 }
 
 function cleanup(sess) {
@@ -628,6 +722,7 @@ function cleanup(sess) {
   [sess.screenVideo, sess.camVideo].forEach((v) => { if (v) v.srcObject = null; });
   $('#preview').srcObject = null;
   $('#previewEmpty').hidden = false;
+  $('#previewEmpty').textContent = 'A pré-visualização aparece durante a gravação.';
   if (session === sess) session = null;
 }
 
@@ -636,16 +731,24 @@ function toggleRecord() {
   if (state.recording) stopRecording(); else startRecording();
 }
 
-function togglePause() {
-  if (!state.recording || !session) return;
-  const r = session.recorder;
-  if (r.state === 'recording') {
-    r.pause(); state.paused = true; state.pauseStart = performance.now();
-  } else if (r.state === 'paused') {
-    r.resume(); state.paused = false; state.pausedAccum += performance.now() - state.pauseStart;
-  }
-  api.recPaused(state.paused);
-  updateUI();
+async function togglePause() {
+  const sess = session;
+  if (!state.recording || !sess || sess.pausing || sess.stopping || sess.splitting) return;
+  sess.pausing = true;
+  const recs = Object.values(sess.recs || {});
+  try {
+    if (!state.paused) {
+      recs.forEach((rr) => { if (rr.r.state === 'recording') rr.r.pause(); });
+      state.paused = true; state.pauseStart = performance.now();
+      api.recPaused(true); updateUI();
+      if (sess.engine === 'ffmpeg') await api.recEnginePause(true);
+    } else {
+      if (sess.engine === 'ffmpeg' && !(await api.recEnginePause(false))) { sess.pausing = false; stopRecording(); return; }
+      recs.forEach((rr) => { if (rr.r.state === 'paused') rr.r.resume(); });
+      state.paused = false; state.pausedAccum += performance.now() - state.pauseStart;
+      api.recPaused(false);
+    }
+  } finally { sess.pausing = false; updateUI(); }
 }
 
 function elapsed() {
@@ -673,7 +776,18 @@ function tick() {
   if (!state.recording) return;
   $('#timer').textContent = fmtTime(elapsed());
   $('#size').textContent = fmtBytes(state.bytes);
-  if (state.autoStopAt && Date.now() >= state.autoStopAt) { state.autoStopAt = null; stopRecording(); }
+  if (state.autoStopAt && Date.now() >= state.autoStopAt) { state.autoStopAt = null; stopRecording(); return; }
+  // limite por parte (tempo ou tamanho)
+  const s = session;
+  if (S.limitMode && S.limitMode !== 'off' && s && !state.paused && !s.splitting && !s.stopping) {
+    const over = S.limitMode === 'time'
+      ? elapsed() - (state.partStart || 0) >= Math.max(1, Number(S.limitMinutes) || 30) * 60000
+      : state.partBytes >= Math.max(50, Number(S.limitMB) || 2000) * MB;
+    if (over) {
+      if (S.limitAction === 'stop') { toast('Limite de gravação atingido: gravação encerrada.'); stopRecording(); }
+      else splitRecording();
+    }
+  }
 }
 
 function updateUI() {
@@ -890,6 +1004,7 @@ async function refreshManuals() {
       b('HTML', '', () => api.mdocOpenHtml(m.dir)),
       b('PDF', '', () => exp('pdf')),
       b('Word', '', () => exp('docx')),
+      b('Traduzir', 'ghost', () => translateDialog(m)),
       b('Pasta', 'ghost', () => api.mdocOpenFolder(m.dir)));
     list.appendChild(row);
   });
@@ -1158,6 +1273,300 @@ function vuLoop() {
   bar.style.width = `${Math.round(r.lvl * 100)}%`;
   bar.style.background = r.peak >= 0.99 ? 'var(--red)' : state.paused ? 'var(--muted)' : 'var(--green)';
   requestAnimationFrame(vuLoop);
+}
+
+/* ------------------------------------------------------------------ */
+/* Diálogo simples                                                      */
+/* ------------------------------------------------------------------ */
+function showDlg(title, body, actions) {
+  $('#dlgTitle').textContent = title;
+  const b = $('#dlgBody'); b.innerHTML = '';
+  if (typeof body === 'string') b.appendChild(el('p', 'hint', body)); else if (body) b.appendChild(body);
+  const a = $('#dlgActions'); a.innerHTML = '';
+  actions.forEach(([label, fn, cls]) => { const x = el('button', `btn ${cls || ''}`, label); x.onclick = fn; a.appendChild(x); });
+  $('#dlg').hidden = false;
+}
+function hideDlg() { $('#dlg').hidden = true; }
+
+/* ------------------------------------------------------------------ */
+/* Motor de gravação e limites                                          */
+/* ------------------------------------------------------------------ */
+function renderEngine() {
+  const ff = S.engine === 'ffmpeg';
+  $('#encLabel').hidden = !ff; $('#grabLabel').hidden = !ff; $('#engineRow').hidden = !ff; $('#engineHint').hidden = !ff;
+  const sel = $('#hwEncoder'); const cur = S.hwEncoder || 'auto';
+  sel.innerHTML = '';
+  sel.add(new Option('Automático (placa de vídeo, se houver)', 'auto'));
+  (S.hwEncoders || []).forEach((e) => sel.add(new Option(e.label, e.id)));
+  sel.value = cur; if (sel.value !== cur) sel.value = 'auto';
+  const hw = (S.hwEncoders || []).filter((e) => e.id !== 'libx264');
+  $('#encInfo').textContent = !S.hwEncoders ? 'Ainda não verificado.' : hw.length ? `Encontrado: ${hw.map((e) => e.label).join(', ')}` : 'Nenhum codificador de placa de vídeo encontrado; será usado o processador (x264).';
+}
+async function detectEncoders() {
+  $('#btnDetectEnc').disabled = true; $('#encInfo').textContent = 'Verificando…';
+  try { S.hwEncoders = await api.recEncoders(true); } finally { $('#btnDetectEnc').disabled = false; }
+  renderEngine();
+}
+function renderLimits() {
+  const m = S.limitMode || 'off';
+  $('#limTime').hidden = m !== 'time'; $('#limSize').hidden = m !== 'size'; $('#limAction').hidden = m === 'off';
+}
+
+/* ------------------------------------------------------------------ */
+/* Recuperação de gravações interrompidas                               */
+/* ------------------------------------------------------------------ */
+async function refreshRecovery() {
+  const items = await api.recoveryList();
+  const box = $('#recoverBox'); const list = $('#recoverList');
+  box.hidden = !items.length; list.innerHTML = '';
+  items.forEach((it) => {
+    const row = el('div', 'row');
+    const info = el('div', 'grow');
+    info.append(el('div', 'title', it.name), el('div', 'meta', `${fmtBytes(it.size)} · iniciada em ${new Date(it.startedAt).toLocaleString('pt-BR')}${it.engine === 'ffmpeg' ? ' · FFmpeg' : ''}`));
+    const ok = el('button', 'btn small primary', 'Recuperar');
+    const no = el('button', 'btn small ghost', 'Descartar');
+    ok.onclick = async () => {
+      ok.disabled = no.disabled = true; ok.textContent = 'Recuperando…';
+      const r = await api.recoveryRepair(it.id);
+      if (r.ok) {
+        toast(`Recuperado: ${r.name} (${fmtTime(r.duration * 1000)})`);
+        showDlg('Gravação recuperada', `O vídeo "${r.name}" foi salvo na pasta de gravações. Os pedaços danificados foram para a Lixeira.`, [
+          ['Abrir no editor', () => { hideDlg(); api.openEditor(r.file); }, 'primary'], ['Fechar', hideDlg]]);
+      } else { toast(`Não foi possível recuperar: ${r.error}`, true); ok.disabled = no.disabled = false; ok.textContent = 'Tentar de novo'; return; }
+      refreshRecovery(); refreshFiles();
+    };
+    no.onclick = () => showDlg('Descartar gravação?', `Os arquivos de "${it.name}" vão para a Lixeira.`, [
+      ['Cancelar', hideDlg], ['Descartar', async () => { hideDlg(); await api.recoveryDiscard(it.id); refreshRecovery(); }, 'danger']]);
+    row.append(el('div', 'ftype mp4', 'REC'), info, ok, no);
+    list.appendChild(row);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Identidade visual                                                    */
+/* ------------------------------------------------------------------ */
+let brandLogoImg = null;
+const BRAND_FIELDS = [['#brName', 'name'], ['#brSite', 'site'], ['#brFooter', 'footer'], ['#brColor', 'color'], ['#brColor2', 'color2']];
+function brand() { return { name: '', color: '#e5484d', color2: '#111827', logoPath: '', footer: '', site: '', ...(S.brand || {}) }; }
+async function renderBrand(reloadLogo = true) {
+  const b = brand();
+  BRAND_FIELDS.forEach(([id, k]) => { if (document.activeElement !== $(id)) $(id).value = b[k] || ''; });
+  $('#brColorTxt').textContent = b.color; $('#brColor2Txt').textContent = b.color2;
+  if (reloadLogo) {
+    const url = b.logoPath ? await api.brandLogo() : null;
+    brandLogoImg = url ? await loadImage(url).catch(() => null) : null;
+    const box = $('#brLogo'); box.innerHTML = '';
+    if (url) { const i = el('img'); i.src = url; box.appendChild(i); } else box.appendChild(el('span', '', 'Sem logo'));
+    $('#btnBrLogoDel').disabled = !url; $('#btnBrToWm').disabled = !url;
+  }
+  const pv = $('#brPreview');
+  pv.style.setProperty('--bc', b.color); pv.style.setProperty('--bc2', b.color2);
+  $('#bpName').textContent = b.name || 'Passo a passo';
+  $('#bpFoot').textContent = b.footer || 'Gerado pelo RecFlow';
+  const bl = $('#bpLogo'); bl.hidden = !brandLogoImg; if (brandLogoImg) bl.src = brandLogoImg.src;
+  const c = $('#bpCard');
+  window.RFBrand.drawCard(c.getContext('2d'), c.width, c.height, { brand: b, logo: brandLogoImg, title: 'Como emitir a nota fiscal', kind: 'intro' });
+}
+function bindBrand() {
+  BRAND_FIELDS.forEach(([id, k]) => {
+    $(id).addEventListener('input', (e) => { S.brand = { ...brand(), [k]: e.target.value }; save({ brand: S.brand }); renderBrand(false); });
+  });
+  $('#btnBrLogo').onclick = async () => {
+    const r = await api.brandChooseLogo(); if (!r) return;
+    if (r.error) { toast(r.error, true); return; }
+    S.brand = { ...brand(), logoPath: r.path }; renderBrand();
+  };
+  $('#btnBrLogoDel').onclick = async () => { S.brand = { ...brand(), logoPath: '' }; await save({ brand: S.brand }, true); renderBrand(); };
+  $('#btnBrToWm').onclick = async () => {
+    const b = brand(); if (!b.logoPath) return;
+    S.wmPath = b.logoPath; S.wmEnabled = true;
+    await save({ wmPath: b.logoPath, wmEnabled: true }, true);
+    setEl($('[data-key="wmEnabled"]'), true); refreshWatermark(); renderSummary();
+    toast('Logo aplicado como marca d\'água das gravações (aba Vídeo).');
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* IA: credenciais                                                      */
+/* ------------------------------------------------------------------ */
+let aiState = null, aiEditing = null;
+const AI_KEY_LINKS = {
+  anthropic: 'https://console.anthropic.com/settings/keys', openai: 'https://platform.openai.com/api-keys',
+  gemini: 'https://aistudio.google.com/apikey', compatible: 'https://console.groq.com/keys'
+};
+async function refreshAi() {
+  aiState = await api.aiList();
+  $('#aiEncWarn').hidden = aiState.encryption;
+  const list = $('#aiList'); list.innerHTML = '';
+  if (!aiState.profiles.length) list.appendChild(el('div', 'empty', 'Nenhuma credencial cadastrada. Clique em "Adicionar credencial".'));
+  aiState.profiles.forEach((p) => {
+    const row = el('div', 'row');
+    const info = el('div', 'grow');
+    const prov = aiState.providers[p.provider] ? aiState.providers[p.provider].label : p.provider;
+    const uses = Object.entries(aiState.use).filter(([, id]) => id === p.id).map(([u]) => ({ text: 'textos', transcribe: 'transcrição', tts: 'narração' }[u]));
+    info.append(el('div', 'title', p.name), el('div', 'meta', [prov, p.model || p.ttsModel || (p.provider === 'http' ? p.httpUrl : ''), p.hasKey ? `chave ${p.keyMask}` : 'sem chave', p.sessionOnly ? 'só nesta sessão' : '', uses.length ? `usado em: ${uses.join(', ')}` : ''].filter(Boolean).join(' · ')));
+    const b = (label, cls, fn) => { const x = el('button', `btn small ${cls}`, label); x.onclick = fn; return x; };
+    const test = b('Testar', '', async () => {
+      test.disabled = true; test.textContent = 'Testando…';
+      const r = await api.aiTest(p.id);
+      test.disabled = false; test.textContent = 'Testar';
+      toast(r.ok ? r.data : r.error, !r.ok);
+    });
+    row.append(el('div', 'ftype ai', 'IA'), info, test, b('Editar', 'ghost', () => editAi(p)),
+      b('Excluir', 'danger', () => showDlg('Excluir credencial?', `"${p.name}" e a chave guardada serão apagadas deste computador.`, [
+        ['Cancelar', hideDlg], ['Excluir', async () => { hideDlg(); await api.aiRemove(p.id); refreshAi(); }, 'danger']])));
+    list.appendChild(row);
+  });
+  const fill = (sel, use) => {
+    const e = $(sel); e.innerHTML = ''; e.add(new Option('— nenhum —', ''));
+    aiState.profiles.filter((p) => aiState.providers[p.provider] && aiState.providers[p.provider].uses.includes(use)).forEach((p) => e.add(new Option(p.name, p.id)));
+    e.value = aiState.use[use] || '';
+  };
+  fill('#aiUseText', 'text'); fill('#aiUseStt', 'transcribe'); fill('#aiUseTts', 'tts');
+  $('#aiLang').value = aiState.lang || 'pt-BR';
+  if (!$('#aiProvider').options.length) Object.entries(aiState.providers).forEach(([k, v]) => $('#aiProvider').add(new Option(v.label, k)));
+}
+function aiFormLayout() {
+  const pv = $('#aiProvider').value;
+  const P = aiState.providers[pv] || { uses: [] };
+  $('#aiRowBase').hidden = pv === 'http';
+  $('#aiBase').placeholder = P.base || 'https://api.exemplo.com/v1';
+  $('#aiRowModel').hidden = pv === 'http';
+  $('#aiRowStt').hidden = !P.uses.includes('transcribe');
+  $('#aiRowTts').hidden = !P.uses.includes('tts') || pv === 'http';
+  $('#aiRowHttp').hidden = pv !== 'http';
+  const link = AI_KEY_LINKS[pv];
+  const kl = $('#aiKeyLink'); kl.innerHTML = '';
+  if (link) {
+    const a = el('a', '', pv === 'compatible' ? 'Exemplo: obter chave do Groq' : 'Onde obter a chave'); a.href = '#';
+    a.onclick = (e) => { e.preventDefault(); api.aiOpenLink(link); };
+    kl.appendChild(a);
+  }
+  if (pv === 'compatible') kl.appendChild(el('span', 'hint', ' · Ollama/LM Studio locais não precisam de chave (ex.: http://localhost:11434/v1).'));
+}
+function editAi(p) {
+  aiEditing = p ? p.id : null;
+  const f = p || { provider: 'anthropic' };
+  $('#aiName').value = f.name || '';
+  $('#aiProvider').value = f.provider;
+  $('#aiBase').value = f.baseUrl || '';
+  $('#aiKey').value = ''; $('#aiKey').placeholder = p && p.hasKey ? `Chave guardada (${p.keyMask}). Deixe em branco para manter.` : 'Cole a chave aqui';
+  $('#aiModel').value = f.model || ''; $('#aiStt').value = f.sttModel || ''; $('#aiTtsModel').value = f.ttsModel || ''; $('#aiVoice').value = f.voice || '';
+  $('#aiHttpUrl').value = f.httpUrl || ''; $('#aiHttpHeaders').value = f.httpHeaders || ''; $('#aiHttpBody').value = f.httpBody || '';
+  $('#aiHttpResp').value = f.httpResponse || 'audio'; $('#aiHttpPath').value = f.httpJsonPath || '';
+  $('#aiModels').innerHTML = '';
+  aiFormLayout();
+  $('#aiForm').hidden = false;
+  $('#aiName').focus();
+}
+function aiFormData() {
+  return {
+    id: aiEditing || undefined, name: $('#aiName').value, provider: $('#aiProvider').value, baseUrl: $('#aiBase').value,
+    apiKey: $('#aiKey').value, model: $('#aiModel').value, sttModel: $('#aiStt').value, ttsModel: $('#aiTtsModel').value, voice: $('#aiVoice').value,
+    httpUrl: $('#aiHttpUrl').value, httpHeaders: $('#aiHttpHeaders').value, httpBody: $('#aiHttpBody').value,
+    httpResponse: $('#aiHttpResp').value, httpJsonPath: $('#aiHttpPath').value
+  };
+}
+async function saveAi() {
+  const r = await api.aiSave(aiFormData());
+  if (!r.ok) { toast(r.error, true); return null; }
+  const saved = r.data.profiles.find((p) => p.id === aiEditing) || r.data.profiles[r.data.profiles.length - 1];
+  aiEditing = saved ? saved.id : null;
+  $('#aiKey').value = '';
+  return saved;
+}
+function bindAi() {
+  $('#btnAiAdd').onclick = () => editAi(null);
+  $('#aiProvider').onchange = aiFormLayout;
+  $('#btnAiCancel').onclick = () => { $('#aiForm').hidden = true; aiEditing = null; };
+  $('#btnAiSave').onclick = async () => { const p = await saveAi(); if (p) { $('#aiForm').hidden = true; toast('Credencial salva.'); refreshAi(); } };
+  $('#btnAiModels').onclick = async () => {
+    const p = await saveAi(); if (!p) return;
+    $('#btnAiModels').disabled = true;
+    const r = await api.aiModels(p.id);
+    $('#btnAiModels').disabled = false;
+    if (!r.ok) { toast(r.error, true); return; }
+    $('#aiModels').innerHTML = r.data.map((m) => `<option value="${m.replace(/"/g, '&quot;')}">`).join('');
+    toast(`${r.data.length} modelo(s) encontrado(s). Clique no campo Modelo para escolher.`);
+    $('#aiModel').focus();
+    refreshAi();
+  };
+  const setUse = async () => {
+    const r = await api.aiSetUse({ text: $('#aiUseText').value, transcribe: $('#aiUseStt').value, tts: $('#aiUseTts').value }, $('#aiLang').value);
+    if (r.ok) refreshAi();
+  };
+  ['#aiUseText', '#aiUseStt', '#aiUseTts', '#aiLang'].forEach((s) => { $(s).onchange = setUse; });
+}
+
+/* ------------------------------------------------------------------ */
+/* Manuais: mesclar e traduzir                                          */
+/* ------------------------------------------------------------------ */
+async function mergeDialog() {
+  const items = await api.mdocList();
+  if (items.length < 2) { toast('São necessários pelo menos dois manuais salvos.', true); return; }
+  const order = [];
+  const body = el('div', 'merge');
+  body.appendChild(el('p', 'hint', 'Marque os manuais na ordem em que devem entrar. Cada um vira um capítulo do manual novo; os originais não mudam.'));
+  const list = el('div', 'merge-list');
+  const renderList = () => {
+    list.innerHTML = '';
+    items.forEach((m) => {
+      const pos = order.indexOf(m.dir);
+      const r = el('label', `merge-item${pos >= 0 ? ' on' : ''}`);
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = pos >= 0;
+      cb.onchange = () => { if (cb.checked) order.push(m.dir); else order.splice(order.indexOf(m.dir), 1); renderList(); };
+      r.append(cb, el('span', 'merge-n', pos >= 0 ? String(pos + 1) : ''), el('span', 'grow', m.title), el('small', '', `${m.screens} tela(s)`));
+      list.appendChild(r);
+    });
+  };
+  renderList();
+  const title = el('input'); title.type = 'text'; title.value = 'Manual completo'; title.maxLength = 120;
+  const chap = el('select');
+  chap.add(new Option('Cada manual vira um capítulo', 'manual'));
+  chap.add(new Option('Manter os capítulos de cada manual', 'keep'));
+  const f = el('div', 'form');
+  const l1 = el('label', '', 'Título do manual novo'); l1.appendChild(title);
+  const l2 = el('label', '', 'Capítulos'); l2.appendChild(chap);
+  f.append(l1, l2);
+  body.append(list, f);
+  showDlg('Mesclar manuais', body, [['Cancelar', hideDlg], ['Mesclar', async () => {
+    if (order.length < 2) { toast('Marque pelo menos dois manuais.', true); return; }
+    const r = await api.mdocMerge(order, { title: title.value.trim() || 'Manual completo', chapters: chap.value });
+    if (!r.ok) { toast(r.error, true); return; }
+    hideDlg(); refreshManuals();
+    toast('Manual mesclado criado.');
+    api.mdocEdit(r.data.dir);
+  }, 'primary']]);
+}
+async function translateDialog(m) {
+  const av = await api.aiAvailable();
+  if (!av.text) { toast('Cadastre uma credencial de IA para textos na aba IA.', true); showPanel('ai'); return; }
+  const sel = el('select');
+  [['en', 'Inglês'], ['es', 'Espanhol'], ['pt-BR', 'Português (Brasil)'], ['fr', 'Francês'], ['it', 'Italiano'], ['de', 'Alemão']].forEach(([v, l]) => sel.add(new Option(l, v)));
+  const body = el('div');
+  body.appendChild(el('p', 'hint', `Cria uma cópia de "${m.title}" com os textos traduzidos pela IA. Os prints e o vídeo são reaproveitados.`));
+  const lb = el('label', '', 'Idioma'); lb.appendChild(sel); body.appendChild(lb);
+  showDlg('Traduzir manual', body, [['Cancelar', hideDlg], ['Traduzir', async (ev) => {
+    const btn = ev.currentTarget; btn.disabled = true; btn.textContent = 'Traduzindo…';
+    const r = await api.mdocTranslate(m.dir, sel.value);
+    btn.disabled = false; btn.textContent = 'Traduzir';
+    if (!r.ok) { toast(r.error, true); return; }
+    hideDlg(); refreshManuals(); toast('Manual traduzido criado.');
+    api.mdocEdit(r.data.dir);
+  }, 'primary']]);
+}
+
+function setupNew() {
+  $('#btnDetectEnc').onclick = detectEncoders;
+  $('#btnSetExport').onclick = async () => { const f = await api.settingsExport(); if (f) toast(`Configurações exportadas: ${f.split(/[\\/]/).pop()}`); };
+  $('#btnSetImport').onclick = async () => {
+    const r = await api.settingsImport(); if (!r) return;
+    if (r.error) { toast(r.error, true); return; }
+    toast(r.failed && r.failed.length ? `Configurações importadas. Atalho indisponível: ${r.failed.join(', ')}` : 'Configurações importadas.');
+  };
+  $('#btnManMerge').onclick = mergeDialog;
+  $('#dlg').addEventListener('click', (e) => { if (e.target.id === 'dlg') hideDlg(); });
+  bindBrand(); bindAi();
 }
 
 init();

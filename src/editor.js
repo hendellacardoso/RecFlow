@@ -18,7 +18,13 @@ const tlCanvas = $('#tlCanvas');
 const tctx = tlCanvas.getContext('2d');
 
 const info = { W: 1920, H: 1080, duration: 0, fps: 30, hasAudio: true, name: '', ffmpeg: true };
-let P = { inT: 0, outT: 0, cuts: [], zooms: [], notes: [] };   // projeto de edição
+const newAudio = () => ({ main: 100, mic: 100, sys: 100, music: null });
+let P = { inT: 0, outT: 0, cuts: [], zooms: [], notes: [], subs: [], voices: [], audio: newAudio(), intro: null, outro: null, subStyle: { burn: true, size: 5 } };   // projeto de edição
+let side = { tracks: {}, clicks: null };     // trilhas separadas e cliques gravados
+let sugg = { zooms: [], cuts: [] };          // sugestões ainda não aceitas
+let inspTab = 'project';
+let aiAvail = { text: false, transcribe: false, tts: false };
+let brandCfg = {}, brandLogo = null;
 let lastState = null;
 const undoStack = [], redoStack = [];
 let selId = null;
@@ -63,7 +69,8 @@ function el(tag, cls, text) {
 }
 const now = () => video.currentTime || 0;
 const frame = () => 1 / Math.min(60, info.fps || 30);
-const allItems = () => [...P.cuts.map((i) => ['cut', i]), ...P.zooms.map((i) => ['zoom', i]), ...P.notes.map((i) => [i.type, i])];
+const allItems = () => [...P.cuts.map((i) => ['cut', i]), ...P.zooms.map((i) => ['zoom', i]), ...P.notes.map((i) => [i.type, i]),
+  ...P.subs.map((i) => ['sub', i]), ...P.voices.map((i) => ['voice', i])];
 function findItem(id) { const f = allItems().find(([, i]) => i.id === id); return f ? { kind: f[0], item: f[1] } : null; }
 const selected = () => (selId ? findItem(selId) : null);
 
@@ -195,6 +202,36 @@ function drawStroke(ctx, s) {
   }
   ctx.restore();
 }
+// Legendas: texto branco sobre faixa escura, centralizado embaixo
+function drawSub(ctx, x) {
+  const size = Math.round(info.H * (P.subStyle.size || 5) / 100);
+  ctx.save();
+  ctx.font = `600 ${size}px "Segoe UI", system-ui, sans-serif`;
+  const maxW = info.W * 0.84;
+  const lines = [];
+  String(x.text || '').split('\n').forEach((para) => {
+    let cur = '';
+    para.split(/\s+/).filter(Boolean).forEach((w) => { const tt = cur ? `${cur} ${w}` : w; if (ctx.measureText(tt).width > maxW && cur) { lines.push(cur); cur = w; } else cur = tt; });
+    if (cur) lines.push(cur);
+  });
+  const lh = size * 1.3, pad = size * 0.35;
+  const bottom = info.H * 0.94;
+  lines.slice(-3).reverse().forEach((l, i) => {
+    const w = ctx.measureText(l).width;
+    const y = bottom - (i + 1) * lh;
+    ctx.fillStyle = 'rgba(0,0,0,0.72)';
+    ctx.beginPath(); ctx.roundRect(info.W / 2 - w / 2 - pad, y - pad * 0.2, w + pad * 2, lh, size * 0.18); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+    ctx.fillText(l, info.W / 2, y + lh / 2 - pad * 0.2);
+  });
+  ctx.restore();
+}
+function subPng(x) {
+  const c = document.createElement('canvas');
+  c.width = Math.floor(info.W / 2) * 2; c.height = Math.floor(info.H / 2) * 2;
+  drawSub(c.getContext('2d'), x);
+  return c.toDataURL('image/png');
+}
 function drawNote(ctx, n) {
   if (n.type === 'text') drawText(ctx, n);
   else n.strokes.forEach((s) => drawStroke(ctx, s));
@@ -237,6 +274,7 @@ function renderStage(t) {
   nctx.clearRect(0, 0, notesCanvas.width, notesCanvas.height);
   nctx.setTransform(k * dpr, 0, 0, k * dpr, 0, 0);
   P.notes.forEach((n) => { if (activeAt(n, t) || (drag && drag.note === n)) drawNote(nctx, n); });
+  P.subs.forEach((x) => { if (activeAt(x, t)) drawSub(nctx, x); });
 
   // retângulo de zoom
   const zr = $('#zoomRect');
@@ -277,6 +315,7 @@ function loop() {
   if (ready) {
     if (!video.paused) enforcePlayback(t);
     renderStage(t);
+    syncAudio(t);
     $('#tcNow').textContent = fmt(t);
     const x = PAD + t * pps;
     $('#playhead').style.left = `${x}px`;
@@ -380,6 +419,8 @@ function blockLabel(kind, it) {
   if (kind === 'cut') return `Removido ${(it.end - it.start).toFixed(1)} s`;
   if (kind === 'zoom') return `Zoom ${it.scale.toFixed(1)}×`;
   if (kind === 'text') return `T  ${(it.text || '').split('\n')[0] || 'Texto'}`;
+  if (kind === 'sub') return (it.text || '').replace(/\n/g, ' ') || 'Legenda';
+  if (kind === 'voice') return `🔊 ${it.text || 'Narração'}`;
   return `✎ Desenho (${it.strokes.length})`;
 }
 function renderTracks() {
@@ -397,6 +438,18 @@ function renderTracks() {
   P.zooms.forEach((z) => mk($('#trkZoom'), 'zoom', z));
   const { lanes, count } = lanesFor(P.notes);
   P.notes.forEach((n) => mk($('#trkNotes'), n.type, n, lanes.get(n.id)));
+  P.subs.forEach((x) => mk($('#trkSubs'), 'sub', x));
+  P.voices.forEach((x) => mk($('#trkVoice'), 'voice', x));
+  // sugestões (tracejadas): clique para aceitar
+  const sg = (track, kind, it, i) => {
+    const b = el('div', `block sugg ${kind}`, kind === 'zoom' ? `+ zoom ${it.scale.toFixed(1)}×` : `+ cortar ${(it.end - it.start).toFixed(1)} s`);
+    b.dataset.sugg = `${kind}:${i}`;
+    b.style.left = `${tx(it.start)}px`; b.style.width = `${Math.max(4, (it.end - it.start) * pps)}px`;
+    b.title = 'Sugestão: clique para aceitar';
+    track.appendChild(b);
+  };
+  sugg.zooms.forEach((z, i) => sg($('#trkZoom'), 'zoom', z, i));
+  sugg.cuts.forEach((c, i) => sg($('#trkCut'), 'cut', c, i));
   const h = count * 26 + 4;
   $('#trkNotes').style.height = `${h}px`; $("#notesLabel").style.height = `${h}px`;
 
@@ -406,7 +459,7 @@ function renderTracks() {
   Object.assign($('#dimOut').style, { left: `${tx(P.outT)}px`, width: `${(info.duration - P.outT) * pps}px` });
 }
 
-function listFor(kind) { return kind === 'cut' ? P.cuts : kind === 'zoom' ? P.zooms : P.notes; }
+function listFor(kind) { return kind === 'cut' ? P.cuts : kind === 'zoom' ? P.zooms : kind === 'sub' ? P.subs : kind === 'voice' ? P.voices : P.notes; }
 
 function createRange(track, s, e) {
   const t0 = clamp(Math.min(s, e), 0, info.duration), t1 = clamp(Math.max(s, e), 0, info.duration);
@@ -414,6 +467,8 @@ function createRange(track, s, e) {
   let it;
   if (track === 'cut') { it = { id: uid(), start: t0, end: t1 }; P.cuts.push(it); }
   else if (track === 'zoom') { it = { id: uid(), start: t0, end: t1, scale: 2, cx: 0.5, cy: 0.5 }; P.zooms.push(it); }
+  else if (track === 'subs') { it = { id: uid(), start: t0, end: t1, text: 'Legenda' }; P.subs.push(it); }
+  else if (track === 'voice') return null;
   else { it = newText(t0, t1, info.W * 0.1, info.H * 0.1); }
   return it;
 }
@@ -446,13 +501,16 @@ tlInner.addEventListener('pointerdown', (e) => {
     };
     return;
   }
+  // sugestões
+  const sgb = e.target.closest('.block.sugg');
+  if (sgb) { const [k, i] = sgb.dataset.sugg.split(':'); acceptSugg(k, Number(i)); return; }
   // blocos
   const block = e.target.closest('.block');
   if (block) {
     const found = findItem(block.dataset.id); if (!found) return;
     const it = found.item;
     const off = e.clientX - block.getBoundingClientRect().left;
-    const mode = off < 7 ? 'l' : off > block.offsetWidth - 7 ? 'r' : 'm';
+    const mode = found.kind === 'voice' ? 'm' : off < 7 ? 'l' : off > block.offsetWidth - 7 ? 'r' : 'm';
     const s0 = it.start, e0 = it.end, x0 = e.clientX;
     let moved = false;
     selId = it.id; renderTracks(); renderInspector();
@@ -658,27 +716,9 @@ function swatchRow(current, onPick, colors = COLORS) {
 function renderInspector() {
   const box = $('#inspector'); box.innerHTML = '';
   const sel = selected();
-  if (!sel) {
-    box.appendChild(el('h2', '', 'Projeto'));
-    const keep = keepSegments();
-    const kv = el('div', 'kv');
-    [['Arquivo', info.name], ['Resolução', `${info.W} × ${info.H}`], ['Duração original', fmt(info.duration)],
-      ['Duração final', fmt(keep.reduce((a, [s, e]) => a + e - s, 0))], ['Trechos removidos', String(P.cuts.length)],
-      ['Zooms', String(P.zooms.length)], ['Anotações', String(P.notes.length)]]
-      .forEach(([kk, v]) => kv.append(el('span', '', kk), el('span', '', v)));
-    box.appendChild(kv);
-    box.appendChild(el('h3', '', 'Como editar'));
-    const ul = el('ul', 'shortcuts');
-    [['Espaço', 'reproduzir / pausar'], ['← →', 'quadro a quadro (Shift: 1 s)'], ['I / O', 'marcar início / fim'],
-      ['X', 'remover trecho a partir do ponto atual'], ['Z', 'zoom: arraste um retângulo no vídeo'],
-      ['T', 'texto: clique no vídeo'], ['D', 'desenho: risque no vídeo'], ['Del', 'excluir item selecionado'],
-      ['Ctrl+Z / Ctrl+Y', 'desfazer / refazer'], ['Ctrl+S', 'salvar projeto'], ['Ctrl+E', 'exportar vídeo']]
-      .forEach(([kk, v]) => { const li = el('li'); li.append(el('b', '', kk), document.createTextNode(` ${v}`)); ul.appendChild(li); });
-    box.appendChild(ul);
-    return;
-  }
+  if (!sel) { renderProjectPanel(box); return; }
   const { kind, item: it } = sel;
-  const titles = { cut: 'Trecho removido', zoom: 'Zoom', text: 'Texto', draw: 'Desenho' };
+  const titles = { cut: 'Trecho removido', zoom: 'Zoom', text: 'Texto', draw: 'Desenho', sub: 'Legenda', voice: 'Narração' };
   box.appendChild(el('span', `chip-type ${kind}`, titles[kind]));
   const times = el('div', 'row2');
   times.append(timeField('Início', it, 'start'), timeField('Fim', it, 'end'));
@@ -724,6 +764,23 @@ function renderInspector() {
     box.appendChild(row);
   }
   if (kind === 'cut') box.appendChild(el('p', 'hint', 'Este trecho não entra no vídeo final. Na reprodução ele é pulado.'));
+  if (kind === 'sub') {
+    const ta = el('textarea'); ta.value = it.text;
+    ta.oninput = () => { it.text = ta.value; renderTracks(); };
+    ta.onchange = () => commit();
+    box.appendChild(field('Texto da legenda', ta));
+    box.appendChild(el('p', 'hint', 'Tamanho e opções das legendas: aba Legendas (clique fora para ver o painel do projeto).'));
+  }
+  if (kind === 'voice') {
+    box.appendChild(el('p', 'hint', it.text || ''));
+    const r = el('input'); r.type = 'range'; r.min = '0'; r.max = '200'; r.step = '5'; r.value = String(it.volume ?? 100);
+    r.oninput = () => { it.volume = Number(r.value); };
+    r.onchange = () => commit();
+    box.appendChild(field('Volume', r));
+    const play = el('button', 'btn small', '▶ Ouvir daqui'); play.onclick = () => { seek(it.start); video.play(); };
+    box.appendChild(play);
+    box.appendChild(el('p', 'hint', 'Arraste o bloco na faixa Narração para mudar o momento.'));
+  }
 
   const del = el('button', 'btn danger', 'Excluir'); del.style.marginTop = '18px';
   del.onclick = deleteSelected;
@@ -738,8 +795,7 @@ function deleteSelected() {
 
 function renderAll() {
   renderTracks(); drawTimeline(); renderInspector();
-  const keep = keepSegments();
-  $('#tcFinal').textContent = fmt(keep.reduce((a, [s, e]) => a + e - s, 0), false);
+  $('#tcFinal').textContent = fmt(finalDuration(), false);
   $('#btnUndo').disabled = !undoStack.length; $('#btnRedo').disabled = !redoStack.length;
 }
 
@@ -755,6 +811,10 @@ function addCut() {
 function addZoom() {
   const t = now(); const it = createRange('zoom', t, Math.min(info.duration, t + 3));
   if (it) { selId = it.id; commit(); }
+}
+function addSub() {
+  const t = now(); const it = createRange('subs', t, Math.min(info.duration, t + 3));
+  if (it) { selId = it.id; commit(); setTimeout(() => { const ta = $('#inspector textarea'); if (ta) { ta.focus(); ta.select(); } }, 30); }
 }
 function addText() {
   const t = now(); const n = newText(t, Math.min(info.duration, t + 3), info.W * 0.08, info.H * 0.08);
@@ -782,7 +842,7 @@ async function save() {
   video.pause();
   const fmtSel = $('#exportFmt').value;
   const isGif = fmtSel === 'gif';
-  const finalDur = keep.reduce((a, [s, e]) => a + e - s, 0);
+  const finalDur = finalDuration();
   if (isGif && finalDur > 30) toast(`GIF de ${Math.round(finalDur)} s pode ficar grande. Para GIF, prefira trechos curtos.`);
   const base = FILE.replace(/\.[^.\\/]+$/, '');
   const def = isGif ? `${base}.gif` : fmtSel === 'whatsapp' ? `${base}_whatsapp.mp4` : `${base}_editado.mp4`;
@@ -798,10 +858,12 @@ async function save() {
     input: FILE, output: out, width: info.W, height: info.H, fps: info.fps, duration: info.duration,
     hasAudio: info.hasAudio, keep, overlays,
     format: fmtSel.startsWith('mp4') ? 'mp4' : fmtSel, crf: fmtSel.startsWith('mp4') ? Number(fmtSel.split('-')[1]) : 22,
-    zooms: P.zooms.map((z) => ({ start: z.start, end: z.end, scale: z.scale, cx: z.cx, cy: z.cy }))
+    zooms: P.zooms.map((z) => ({ start: z.start, end: z.end, scale: z.scale, cx: z.cx, cy: z.cy })),
+    ...exportExtras(fmtSel)
   });
   if (r.ok) {
     setProgress(1);
+    $('#modal .modal-card').classList.remove('wide');
     showModal(isGif ? 'GIF salvo!' : 'Vídeo salvo!', r.file, [
       ['Mostrar na pasta', () => api.editorShowFile(r.file)],
       ['Abrir vídeo', () => api.editorOpenFile(r.file)],
@@ -810,8 +872,10 @@ async function save() {
   } else if (r.error === 'cancelado') { hideModal(); toast('Exportação cancelada.'); }
   else showModal('Não foi possível salvar', r.error, [['Fechar', hideModal, true]]);
 }
-function showModal(title, text, actions) {
+function showModal(title, text, actions, opts = {}) {
+  $('#modal .modal-card').classList.remove('wide');
   $('#mTitle').textContent = title; $('#mText').textContent = text;
+  $('#modal .bar').hidden = opts.bar === false;
   const a = $('#mActions'); a.innerHTML = '';
   actions.forEach(([label, fn, primary]) => { const b = el('button', `btn${primary ? ' primary' : ''}`, label); b.onclick = fn; a.appendChild(b); });
   $('#modal').hidden = false;
@@ -819,6 +883,436 @@ function showModal(title, text, actions) {
 function hideModal() { $('#modal').hidden = true; }
 function setProgress(p) { $('#mBar').style.width = `${Math.round(p * 100)}%`; }
 api.on('editor:progress', (p) => { setProgress(p); $('#mTitle').textContent = `Exportando vídeo… ${Math.round(p * 100)}%`; });
+
+/* ------------------------------------------------------------------ */
+/* Painel do projeto (abas)                                             */
+/* ------------------------------------------------------------------ */
+const hasTracks = () => !!(side.tracks.mic || side.tracks.sys);
+const clipDur = (c) => (c ? Math.max(0.5, Math.min(60, Number(c.dur) || 0)) : 0);
+function finalDuration() {
+  return keepSegments().reduce((a, [s2, e]) => a + e - s2, 0) + clipDur(P.intro) + clipDur(P.outro);
+}
+// tempo no vídeo final (depois dos cortes e da abertura) para um tempo do vídeo original
+function outTime(t) {
+  let acc = clipDur(P.intro);
+  for (const [s2, e] of keepSegments()) {
+    if (t <= s2) return acc;
+    if (t < e) return acc + (t - s2);
+    acc += e - s2;
+  }
+  return acc;
+}
+function rangeIn(label, min, max, step, value, onInput, onChange, unit = '%') {
+  const f = el('label', 'field', `${label} (${value}${unit})`);
+  const r = el('input'); r.type = 'range'; r.min = String(min); r.max = String(max); r.step = String(step); r.value = String(value);
+  r.oninput = () => { f.firstChild.textContent = `${label} (${r.value}${unit})`; onInput(Number(r.value)); };
+  r.onchange = () => onChange(Number(r.value));
+  f.appendChild(r);
+  return f;
+}
+function checkIn(label, value, onChange) {
+  const l = el('label', 'check'); const c = el('input'); c.type = 'checkbox'; c.checked = !!value;
+  c.onchange = () => onChange(c.checked);
+  l.append(c, document.createTextNode(` ${label}`));
+  return l;
+}
+function btn(label, fn, cls = '') { const b = el('button', `btn small ${cls}`, label); b.onclick = fn; return b; }
+const TABS = [['project', 'Projeto'], ['audio', 'Áudio'], ['clips', 'Abertura'], ['subs', 'Legendas'], ['sugg', 'Sugestões']];
+
+function renderProjectPanel(box) {
+  const tabs = el('div', 'tabs');
+  TABS.forEach(([k, l]) => {
+    const b = el('button', inspTab === k ? 'on' : '', l + (k === 'sugg' && (sugg.zooms.length + sugg.cuts.length) ? ` (${sugg.zooms.length + sugg.cuts.length})` : ''));
+    b.onclick = () => { inspTab = k; renderInspector(); };
+    tabs.appendChild(b);
+  });
+  box.appendChild(tabs);
+  ({ project: tabProject, audio: tabAudio, clips: tabClips, subs: tabSubs, sugg: tabSugg }[inspTab] || tabProject)(box);
+}
+
+function tabProject(box) {
+  const keep = keepSegments();
+  const kv = el('div', 'kv');
+  [['Arquivo', info.name], ['Resolução', `${info.W} × ${info.H}`], ['Duração original', fmt(info.duration)],
+    ['Duração final', fmt(finalDuration())], ['Trechos removidos', String(P.cuts.length)],
+    ['Zooms', String(P.zooms.length)], ['Anotações', String(P.notes.length)], ['Legendas', String(P.subs.length)],
+    ['Trilhas separadas', hasTracks() ? 'sim' : 'não']]
+    .forEach(([kk, v]) => kv.append(el('span', '', kk), el('span', '', v)));
+  box.appendChild(kv);
+  void keep;
+  box.appendChild(el('h3', '', 'Como editar'));
+  const ul = el('ul', 'shortcuts');
+  [['Espaço', 'reproduzir / pausar'], ['← →', 'quadro a quadro (Shift: 1 s)'], ['I / O', 'marcar início / fim'],
+    ['X', 'remover trecho a partir do ponto atual'], ['Z', 'zoom: arraste um retângulo no vídeo'],
+    ['T', 'texto: clique no vídeo'], ['D', 'desenho: risque no vídeo'], ['L', 'legenda no ponto atual'], ['Del', 'excluir item selecionado'],
+    ['Ctrl+Z / Ctrl+Y', 'desfazer / refazer'], ['Ctrl+S', 'salvar projeto'], ['Ctrl+E', 'exportar vídeo']]
+    .forEach(([kk, v]) => { const li = el('li'); li.append(el('b', '', kk), document.createTextNode(` ${v}`)); ul.appendChild(li); });
+  box.appendChild(ul);
+}
+
+/* ---- Áudio: trilhas, música e narração ---- */
+function tabAudio(box) {
+  const A = P.audio;
+  box.appendChild(el('h3', '', 'Volumes'));
+  if (hasTracks()) {
+    if (side.tracks.mic) box.appendChild(rangeIn('Microfone', 0, 200, 5, A.mic, (v) => { A.mic = v; }, () => commit()));
+    if (side.tracks.sys) box.appendChild(rangeIn('Som do sistema', 0, 200, 5, A.sys, (v) => { A.sys = v; }, () => commit()));
+    box.appendChild(el('p', 'hint', 'Esta gravação tem trilhas separadas: cada volume é ajustado sozinho. Acima de 100% vale na exportação.'));
+  } else if (info.hasAudio) {
+    box.appendChild(rangeIn('Áudio do vídeo', 0, 200, 5, A.main, (v) => { A.main = v; }, () => commit()));
+    box.appendChild(el('p', 'hint', 'Para ajustar microfone e som do sistema separadamente, ative "trilhas separadas" na aba Áudio do RecFlow antes de gravar.'));
+  } else box.appendChild(el('p', 'hint', 'Este vídeo não tem áudio.'));
+
+  box.appendChild(el('h3', '', 'Música de fundo'));
+  const mb = el('div', 'media-box');
+  const mu = A.music;
+  mb.appendChild(el('div', `media-name${mu ? '' : ' none'}`, mu ? mu.name : 'Nenhuma música'));
+  const row = el('div', 'btn-row');
+  row.append(btn(mu ? 'Trocar…' : 'Escolher…', async () => {
+    const m = await api.editorPickMedia('music'); if (!m) return;
+    A.music = { file: m.file, name: m.name, url: m.url, duration: m.duration, volume: mu ? mu.volume : 20, loop: true, duck: true, fadeIn: 1, fadeOut: 2 };
+    commit();
+  }));
+  if (mu) row.append(btn('Remover', () => { A.music = null; commit(); }, 'ghost'));
+  mb.appendChild(row);
+  if (mu) {
+    mb.appendChild(rangeIn('Volume', 0, 100, 1, mu.volume, (v) => { mu.volume = v; }, () => commit()));
+    mb.appendChild(checkIn('Repetir até o fim do vídeo', mu.loop, (v) => { mu.loop = v; commit(); }));
+    mb.appendChild(checkIn('Abaixar a música quando houver voz', mu.duck, (v) => { mu.duck = v; commit(); }));
+    mb.appendChild(rangeIn('Entrada suave', 0, 5, 0.5, mu.fadeIn, (v) => { mu.fadeIn = v; }, () => commit(), ' s'));
+    mb.appendChild(rangeIn('Saída suave', 0, 8, 0.5, mu.fadeOut, (v) => { mu.fadeOut = v; }, () => commit(), ' s'));
+  }
+  box.appendChild(mb);
+
+  box.appendChild(el('h3', '', 'Narração (IA)'));
+  const ta = el('textarea'); ta.placeholder = 'Texto que será falado a partir do ponto atual do vídeo…';
+  box.appendChild(ta);
+  const nr = el('div', 'btn-row'); nr.style.marginTop = '8px';
+  const gen = btn('🔊 Gerar narração aqui', async () => {
+    const text = ta.value.trim(); if (!text) { ta.focus(); return; }
+    if (!aiAvail.tts) { toast('Cadastre uma credencial de narração (voz) na aba IA do RecFlow.', true); return; }
+    gen.disabled = true; gen.textContent = 'Gerando…';
+    const r = await api.editorNarrate(FILE, text);
+    gen.disabled = false; gen.textContent = '🔊 Gerar narração aqui';
+    if (!r.ok) { toast(r.error, true); return; }
+    const t = now();
+    const v = { id: uid(), start: t, end: Math.min(info.duration, t + r.duration), dur: r.duration, file: r.file, url: r.url, text, volume: 100 };
+    P.voices.push(v); selId = v.id; commit();
+    toast('Narração adicionada na faixa Narração.');
+  }, 'ai');
+  const imp = btn('✨ Melhorar texto', async () => {
+    const text = ta.value.trim(); if (!text) return;
+    if (!aiAvail.text) { toast('Cadastre uma credencial de IA para textos.', true); return; }
+    imp.disabled = true;
+    const r = await api.aiTask('improveNarration', { text });
+    imp.disabled = false;
+    if (r.ok) ta.value = r.data; else toast(r.error, true);
+  }, 'ghost');
+  nr.append(gen, imp);
+  box.appendChild(nr);
+  if (!aiAvail.tts) box.appendChild(el('p', 'hint', 'Usa a voz cadastrada na aba IA (OpenAI, compatível ou sua própria API, como a APIVoz).'));
+}
+
+/* ---- Abertura e encerramento ---- */
+function tabClips(box) {
+  [['intro', 'Abertura'], ['outro', 'Encerramento']].forEach(([key, label]) => {
+    box.appendChild(el('h3', '', label));
+    const c = P[key];
+    const sel = el('select');
+    [['', 'Nenhum'], ['card', 'Cartão com a identidade visual'], ['file', 'Vídeo ou imagem do computador']].forEach(([v, l]) => sel.add(new Option(l, v)));
+    sel.value = !c ? '' : c.kind === 'card' ? 'card' : 'file';
+    sel.onchange = async () => {
+      if (sel.value === '') P[key] = null;
+      else if (sel.value === 'card') P[key] = { kind: 'card', dur: 3, title: key === 'intro' ? (info.name || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ') : 'Obrigado por assistir!', subtitle: '' };
+      else {
+        const m = await api.editorPickMedia('clip');
+        if (!m) { sel.value = !c ? '' : c.kind === 'card' ? 'card' : 'file'; return; }
+        P[key] = { kind: m.kind === 'image' ? 'image' : 'video', file: m.file, name: m.name, url: m.url, hasAudio: m.hasAudio, dur: m.kind === 'image' ? 3 : Math.min(60, m.duration || 5) };
+      }
+      commit();
+    };
+    box.appendChild(field('Tipo', sel));
+    if (!c) return;
+    if (c.kind === 'card') {
+      const cv = el('canvas', 'card-prev'); cv.width = 480; cv.height = Math.round(480 * info.H / info.W);
+      window.RFBrand.drawCard(cv.getContext('2d'), cv.width, cv.height, { brand: brandCfg, logo: brandLogo, title: c.title, subtitle: c.subtitle, kind: key });
+      box.appendChild(cv);
+      const t = el('input'); t.type = 'text'; t.value = c.title || ''; t.maxLength = 90;
+      t.oninput = () => { c.title = t.value; window.RFBrand.drawCard(cv.getContext('2d'), cv.width, cv.height, { brand: brandCfg, logo: brandLogo, title: c.title, subtitle: c.subtitle, kind: key }); };
+      t.onchange = () => commit();
+      box.appendChild(field('Título', t));
+      const st = el('input'); st.type = 'text'; st.value = c.subtitle || ''; st.maxLength = 120;
+      st.placeholder = key === 'intro' ? (brandCfg.name || 'Subtítulo (opcional)') : (brandCfg.site || brandCfg.footer || 'Texto (opcional)');
+      st.oninput = () => { c.subtitle = st.value; t.oninput(); };
+      st.onchange = () => commit();
+      box.appendChild(field('Subtítulo', st));
+    } else {
+      box.appendChild(el('div', 'media-name', c.name || ''));
+    }
+    if (c.kind !== 'video' || (c.dur || 0) > 0) {
+      box.appendChild(rangeIn('Duração', 1, c.kind === 'video' ? Math.max(1, Math.ceil(c.dur)) : 15, 0.5, c.dur, (v) => { c.dur = v; }, () => commit(), ' s'));
+    }
+  });
+  box.appendChild(el('p', 'hint', 'Cores e logo do cartão vêm da aba Identidade visual do RecFlow. A abertura e o encerramento entram só no vídeo exportado.'));
+}
+
+/* ---- Legendas (transcrição por IA) ---- */
+function tabSubs(box) {
+  box.appendChild(el('h3', '', 'Legendas automáticas'));
+  const src = el('select');
+  if (side.tracks.mic) src.add(new Option('Microfone (trilha separada)', 'mic'));
+  src.add(new Option('Áudio do vídeo', 'main'));
+  if (side.tracks.mic || info.hasAudio) box.appendChild(field('Ouvir de', src));
+  const gen = btn(P.subs.length ? '✨ Gerar de novo' : '✨ Gerar legendas', () => transcribe(src.value), 'ai');
+  gen.disabled = !info.hasAudio && !side.tracks.mic;
+  box.appendChild(el('div', 'btn-row')).appendChild(gen);
+  if (!aiAvail.transcribe) box.appendChild(el('p', 'hint', 'Usa a transcrição cadastrada na aba IA (OpenAI Whisper ou compatível, como o Groq).'));
+
+  box.appendChild(el('h3', '', `Aparência (${P.subs.length} legenda(s))`));
+  box.appendChild(checkIn('Gravar as legendas no vídeo exportado', P.subStyle.burn, (v) => { P.subStyle.burn = v; commit(); }));
+  box.appendChild(rangeIn('Tamanho', 3, 9, 0.5, P.subStyle.size, (v) => { P.subStyle.size = v; }, () => commit(), '%'));
+  const r2 = el('div', 'btn-row');
+  r2.append(btn('Salvar .srt', saveSrt), btn('Apagar todas', () => { if (P.subs.length && confirm('Apagar todas as legendas?')) { P.subs = []; commit(); } }, 'ghost'));
+  box.appendChild(r2);
+
+  box.appendChild(el('h3', '', 'Traduzir legendas'));
+  const lang = el('select');
+  [['en', 'Inglês'], ['es', 'Espanhol'], ['pt-BR', 'Português (Brasil)'], ['fr', 'Francês'], ['it', 'Italiano'], ['de', 'Alemão']].forEach(([v, l]) => lang.add(new Option(l, v)));
+  const tr = btn('✨ Traduzir', async () => {
+    if (!P.subs.length) { toast('Gere ou crie legendas primeiro.'); return; }
+    if (!aiAvail.text) { toast('Cadastre uma credencial de IA para textos na aba IA.', true); return; }
+    showModal('Traduzindo legendas…', `${P.subs.length} legenda(s)`, []); setProgress(0.3);
+    const r = await api.aiTask('texts', { mode: 'translate', lang: lang.value, items: P.subs.map((x) => ({ id: x.id, text: x.text })) });
+    hideModal();
+    if (!r.ok) { toast(r.error, true); return; }
+    P.subs.forEach((x) => { if (r.data[x.id]) x.text = r.data[x.id]; });
+    commit(); toast('Legendas traduzidas. Ctrl+Z desfaz.');
+  }, 'ai');
+  const row = el('div', 'btn-row'); row.append(lang, tr); lang.style.flex = '1';
+  box.appendChild(row);
+
+  box.appendChild(el('h3', '', 'YouTube'));
+  box.appendChild(btn('✨ Título, descrição e capítulos', videoMeta, 'ai'));
+  box.appendChild(el('p', 'hint', 'A IA usa as legendas (a transcrição) para sugerir título, descrição e capítulos com os tempos do vídeo final.'));
+}
+function splitLong(segs) {
+  const out = [];
+  segs.forEach((sg) => {
+    const end = sg.end == null ? sg.start + Math.max(2, sg.text.split(/\s+/).length * 0.4) : sg.end;
+    const dur = end - sg.start;
+    const words = sg.text.split(/\s+/).filter(Boolean);
+    const n = Math.max(1, Math.min(words.length, Math.ceil(dur / 5), Math.ceil(sg.text.length / 90)));
+    for (let i = 0; i < n; i++) {
+      const w = words.slice(Math.round((i * words.length) / n), Math.round(((i + 1) * words.length) / n));
+      if (!w.length) continue;
+      out.push({ id: uid(), start: sg.start + (i * dur) / n, end: sg.start + ((i + 1) * dur) / n, text: w.join(' ') });
+    }
+  });
+  return out.filter((x) => x.end > x.start && x.start < info.duration).map((x) => ({ ...x, end: Math.min(x.end, info.duration) }));
+}
+async function transcribe(source) {
+  if (!aiAvail.transcribe) { toast('Cadastre uma credencial de transcrição na aba IA do RecFlow.', true); return; }
+  if (P.subs.length && !confirm('Substituir as legendas atuais?')) return;
+  showModal('Gerando legendas…', 'Enviando o áudio para a transcrição', []); setProgress(0.15);
+  const off = api.on('ai:progress', (m) => { $('#mText').textContent = m; setProgress(Math.min(0.9, parseFloat($('#mBar').style.width || '0') / 100 + 0.2)); });
+  const r = await api.editorTranscribe(FILE, { track: source === 'mic' && side.tracks.mic ? side.tracks.mic.file : null });
+  off(); hideModal();
+  if (!r.ok) { toast(r.error, true); return; }
+  P.subs = splitLong(r.segments);
+  inspTab = 'subs'; commit();
+  toast(`${P.subs.length} legenda(s) criada(s). Clique numa legenda na linha do tempo para corrigir o texto.`);
+}
+function srtTime(t) {
+  const ms = Math.max(0, Math.round(t * 1000));
+  const p = (n, l = 2) => String(n).padStart(l, '0');
+  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
+}
+function mappedSubs() {
+  return [...P.subs].sort((a, b) => a.start - b.start)
+    .map((x) => ({ ...x, a: outTime(x.start), b: outTime(x.end) }))
+    .filter((x) => x.b - x.a > 0.15 && x.text.trim());
+}
+async function saveSrt() {
+  const list = mappedSubs();
+  if (!list.length) { toast('Não há legendas.'); return; }
+  const txt = list.map((x, i) => `${i + 1}\r\n${srtTime(x.a)} --> ${srtTime(x.b)}\r\n${x.text.trim()}\r\n`).join('\r\n');
+  const f = await api.editorSaveText(FILE.replace(/\.[^.\\/]+$/, '.srt'), txt, 'srt');
+  if (f) toast(`Legenda salva: ${f.split(/[\\/]/).pop()}`);
+}
+async function videoMeta() {
+  if (!aiAvail.text) { toast('Cadastre uma credencial de IA para textos na aba IA.', true); return; }
+  const list = mappedSubs();
+  if (!list.length) { toast('Gere as legendas primeiro: a IA usa a transcrição.', true); return; }
+  showModal('Criando título e capítulos…', 'A IA está lendo a transcrição', []); setProgress(0.4);
+  const mmss = (t) => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  const r = await api.aiTask('videoMeta', { transcript: list.map((x) => `[${mmss(x.a)}] ${x.text}`).join('\n') });
+  hideModal();
+  if (!r.ok) { toast(r.error, true); return; }
+  const d = r.data || {};
+  const chapters = (d.chapters || []).map((c) => `${c.t} ${c.title}`).join('\n');
+  const wrap = el('div', 'meta-out');
+  const mk = (label, value, rows) => {
+    const l = el('label', 'field', label); const t = el('textarea'); t.value = value; t.rows = rows;
+    const c = el('button', 'btn small', 'Copiar'); c.onclick = () => { navigator.clipboard.writeText(t.value); toast('Copiado.'); };
+    l.append(t, c); wrap.appendChild(l);
+  };
+  mk('Título', d.title || '', 2);
+  mk('Descrição', `${d.description || ''}${chapters ? `\n\n${chapters}` : ''}`, 8);
+  mk('Capítulos', chapters, 5);
+  showModal('Para o YouTube', '', [['Fechar', hideModal, true]], { bar: false });
+  $('#mText').replaceChildren(wrap);
+  $('#modal .modal-card').classList.add('wide');
+}
+
+/* ---- Sugestões: zoom pelos cliques e cortes de silêncio ---- */
+function tabSugg(box) {
+  box.appendChild(el('h3', '', 'Zoom automático'));
+  const nClicks = side.clicks && side.clicks.clicks ? side.clicks.clicks.length : 0;
+  box.appendChild(el('p', 'hint', nClicks ? `${nClicks} clique(s) gravado(s). O RecFlow sugere zooms onde você clicou.` : 'Esta gravação não tem cliques guardados (ative na aba Desenho e teclas do RecFlow).'));
+  const zb = btn('Sugerir zooms pelos cliques', suggestZooms); zb.disabled = !nClicks;
+  box.appendChild(zb);
+
+  box.appendChild(el('h3', '', 'Silêncios'));
+  const db = el('select');
+  [[-45, 'Muito sensível (−45 dB)'], [-38, 'Normal (−38 dB)'], [-30, 'Só silêncio forte (−30 dB)']].forEach(([v, l]) => db.add(new Option(l, v)));
+  db.value = '-38';
+  const mn = el('select');
+  [[0.8, '0,8 s ou mais'], [1.5, '1,5 s ou mais'], [3, '3 s ou mais']].forEach(([v, l]) => mn.add(new Option(l, v)));
+  mn.value = '1.5';
+  box.append(field('Sensibilidade', db), field('Pausas de', mn));
+  const sb = btn('Detectar silêncios para cortar', () => suggestCuts(Number(db.value), Number(mn.value)));
+  sb.disabled = !info.hasAudio && !hasTracks();
+  box.appendChild(sb);
+
+  const total = sugg.zooms.length + sugg.cuts.length;
+  box.appendChild(el('h3', '', `Sugestões (${total})`));
+  if (!total) { box.appendChild(el('p', 'hint', 'As sugestões aparecem tracejadas na linha do tempo. Clique numa para aceitar.')); return; }
+  const list = el('div', 'sugg-list');
+  const item = (k, it, i) => {
+    const r = el('div', 'sugg-item');
+    const t = el('span', '', `${k === 'zoom' ? `Zoom ${it.scale.toFixed(1)}×` : 'Cortar silêncio'} · ${fmt(it.start, false)}–${fmt(it.end, false)}`);
+    t.onclick = () => seek(it.start + 0.01);
+    r.append(t, btn('Aceitar', () => acceptSugg(k, i)), btn('✕', () => { (k === 'zoom' ? sugg.zooms : sugg.cuts).splice(i, 1); renderAll(); }, 'ghost'));
+    list.appendChild(r);
+  };
+  sugg.zooms.forEach((z, i) => item('zoom', z, i));
+  sugg.cuts.forEach((c, i) => item('cut', c, i));
+  box.appendChild(list);
+  const row = el('div', 'btn-row');
+  row.append(btn('Aceitar todas', () => {
+    sugg.zooms.forEach((z) => P.zooms.push({ ...z, id: uid() }));
+    sugg.cuts.forEach((c) => P.cuts.push({ ...c, id: uid() }));
+    sugg = { zooms: [], cuts: [] }; commit();
+  }, 'primary'), btn('Descartar todas', () => { sugg = { zooms: [], cuts: [] }; renderAll(); }, 'ghost'));
+  box.appendChild(row);
+}
+function acceptSugg(k, i) {
+  const list = k === 'zoom' ? sugg.zooms : sugg.cuts;
+  const it = list[i]; if (!it) return;
+  list.splice(i, 1);
+  const n = { ...it, id: uid() };
+  (k === 'zoom' ? P.zooms : P.cuts).push(n);
+  selId = n.id; commit();
+}
+const overlaps = (a, list) => list.some((b) => a.start < b.end && a.end > b.start);
+function suggestZooms() {
+  const clicks = [...(side.clicks.clicks || [])].filter((c) => c.t >= 0 && c.t <= info.duration).sort((a, b) => a.t - b.t);
+  const groups = [];
+  clicks.forEach((c) => {
+    const g = groups[groups.length - 1];
+    if (g && c.t - g[g.length - 1].t < 2.5 && Math.hypot(c.x - g[0].x, c.y - g[0].y) < 0.28) g.push(c); else groups.push([c]);
+  });
+  const out = [];
+  groups.forEach((g) => {
+    const xs = g.map((c) => c.x), ys = g.map((c) => c.y);
+    const spread = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    const z = {
+      start: clamp(g[0].t - 0.9, 0, info.duration), end: clamp(g[g.length - 1].t + 1.8, 0, info.duration),
+      scale: spread > 0.18 ? 1.5 : 2, cx: clamp(xs.reduce((a, b) => a + b, 0) / g.length, 0.15, 0.85), cy: clamp(ys.reduce((a, b) => a + b, 0) / g.length, 0.15, 0.85)
+    };
+    const prev = out[out.length - 1];
+    if (prev && z.start < prev.end + 0.4) { prev.end = Math.max(prev.end, z.end); prev.cx = (prev.cx + z.cx) / 2; prev.cy = (prev.cy + z.cy) / 2; prev.scale = Math.min(prev.scale, z.scale); return; }
+    out.push(z);
+  });
+  sugg.zooms = out.filter((z) => z.end - z.start >= 1.2 && !overlaps(z, P.zooms));
+  inspTab = 'sugg'; renderAll();
+  toast(sugg.zooms.length ? `${sugg.zooms.length} zoom(s) sugerido(s). Confira e aceite na linha do tempo.` : 'Nenhum zoom novo para sugerir.');
+}
+async function suggestCuts(db, min) {
+  showModal('Procurando silêncios…', '', []); setProgress(0.5);
+  const sil = await api.editorSilences(FILE, { db, min, track: side.tracks.mic ? side.tracks.mic.file : null });
+  hideModal();
+  const m = 0.25;   // margem para não cortar o fim/começo das falas
+  sugg.cuts = sil.map(([a, b]) => ({ start: a + m, end: Math.min(info.duration, b) - m }))
+    .filter((c) => c.end - c.start >= 0.4 && c.end > P.inT && c.start < P.outT && !overlaps(c, P.cuts));
+  inspTab = 'sugg'; renderAll();
+  const tot = sugg.cuts.reduce((a, c) => a + c.end - c.start, 0);
+  toast(sugg.cuts.length ? `${sugg.cuts.length} silêncio(s) encontrado(s) (${tot.toFixed(1)} s). Aceite os que quiser cortar.` : 'Nenhum silêncio encontrado com essa sensibilidade.');
+}
+
+/* ------------------------------------------------------------------ */
+/* Prévia do áudio (trilhas separadas, música e narrações)              */
+/* ------------------------------------------------------------------ */
+const aux = new Map();   // chave -> <audio>
+function auxEl(key, url) {
+  let a = aux.get(key);
+  if (!a || a.dataset.url !== url) {
+    if (a) { a.pause(); a.remove(); }
+    a = new Audio(url); a.dataset.url = url; a.preload = 'auto';
+    $('#auxMedia').appendChild(a); aux.set(key, a);
+  }
+  return a;
+}
+function syncAudio(t) {
+  const playing = !video.paused;
+  const master = Number($('#volume').value);
+  const want = new Set();
+  const drive = (key, url, target, vol, active) => {
+    want.add(key);
+    const a = auxEl(key, url);
+    a.volume = clamp(vol, 0, 1) * master;
+    if (!playing || !active) { if (!a.paused) a.pause(); return; }
+    if (Math.abs(a.currentTime - target) > 0.25) { try { a.currentTime = Math.max(0, target); } catch { /* ainda carregando */ } }
+    a.playbackRate = video.playbackRate;
+    if (a.paused) a.play().catch(() => {});
+  };
+  video.muted = hasTracks();
+  if (!hasTracks()) video.volume = clamp(P.audio.main / 100, 0, 1) * master;
+  if (side.tracks.mic) drive('mic', side.tracks.mic.url, t, P.audio.mic / 100, true);
+  if (side.tracks.sys) drive('sys', side.tracks.sys.url, t, P.audio.sys / 100, true);
+  const mu = P.audio.music;
+  if (mu && mu.url) {
+    const ot = outTime(t) - clipDur(P.intro);
+    const len = mu.duration || 0;
+    const target = mu.loop && len ? ot % len : ot;
+    drive('music', mu.url, target, (mu.volume / 100) * (mu.duck ? 0.6 : 1), !len || mu.loop || ot < len);
+  }
+  P.voices.forEach((v) => drive(`v:${v.id}`, v.url, t - v.start, (v.volume ?? 100) / 100, t >= v.start && t < v.start + (v.dur || v.end - v.start)));
+  [...aux.keys()].forEach((k) => { if (!want.has(k)) { const a = aux.get(k); a.pause(); a.remove(); aux.delete(k); } });
+}
+
+/* ------------------------------------------------------------------ */
+/* Exportação: dados extras (áudio, legendas, abertura)                 */
+/* ------------------------------------------------------------------ */
+function clipSpec(c, kind) {
+  if (!c) return null;
+  if (c.kind === 'card') return { kind: 'image', dur: clipDur(c), png: window.RFBrand.cardPng(Math.floor(info.W / 2) * 2, Math.floor(info.H / 2) * 2, { brand: brandCfg, logo: brandLogo, title: c.title, subtitle: c.subtitle, kind }) };
+  return { kind: c.kind, file: c.file, dur: clipDur(c), hasAudio: !!c.hasAudio };
+}
+function exportExtras(fmtSel) {
+  const gif = fmtSel === 'gif';
+  return {
+    audio: {
+      main: P.audio.main,
+      tracks: hasTracks() ? [side.tracks.mic && { file: side.tracks.mic.file, volume: P.audio.mic }, side.tracks.sys && { file: side.tracks.sys.file, volume: P.audio.sys }].filter(Boolean) : [],
+      voices: P.voices.map((v) => ({ file: v.file, start: v.start, volume: v.volume ?? 100 })),
+      music: P.audio.music ? { ...P.audio.music } : null
+    },
+    subs: P.subStyle.burn ? P.subs.filter((x) => x.text.trim()).map((x) => ({ start: x.start, end: x.end, png: subPng(x) })) : [],
+    intro: gif ? null : clipSpec(P.intro, 'intro'),
+    outro: gif ? null : clipSpec(P.outro, 'outro')
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /* Controles                                                            */
@@ -842,6 +1336,7 @@ $('#btnOut').onclick = markOut;
 $('#btnCut').onclick = addCut;
 $('#btnAddZoom').onclick = addZoom;
 $('#btnAddText').onclick = addText;
+$('#btnAddSub').onclick = addSub;
 $('#tlZoom').oninput = () => {
   const center = (tlScroll.scrollLeft + tlScroll.clientWidth / 2 - PAD) / pps;
   layoutTimeline();
@@ -881,6 +1376,7 @@ window.addEventListener('keydown', (e) => {
     case 'z': setTool('zoom'); break;
     case 't': setTool('text'); break;
     case 'd': setTool('draw'); break;
+    case 'l': addSub(); break;
     case 'delete': case 'backspace': deleteSelected(); break;
     case 'escape': selId = null; setTool('select'); renderAll(); break;
     default: break;
@@ -929,10 +1425,20 @@ async function init() {
     const fix = (it) => { it.start = clamp(Number(it.start) || 0, 0, info.duration); it.end = clamp(Number(it.end) || 0, it.start, info.duration); return it; };
     P = {
       inT: clamp(Number(e.inT) || 0, 0, info.duration), outT: clamp(Number(e.outT) || info.duration, 0, info.duration),
-      cuts: (e.cuts || []).map(fix), zooms: (e.zooms || []).map(fix), notes: (e.notes || []).map(fix)
+      cuts: (e.cuts || []).map(fix), zooms: (e.zooms || []).map(fix), notes: (e.notes || []).map(fix),
+      subs: (e.subs || []).map(fix), voices: (e.voices || []).map(fix),
+      audio: { ...newAudio(), ...(e.audio || {}) }, intro: e.intro || null, outro: e.outro || null,
+      subStyle: { burn: true, size: 5, ...(e.subStyle || {}) }
     };
     if (P.outT <= P.inT) P.outT = info.duration;
   }
+  try { side = await api.editorSidecars(FILE); } catch { side = { tracks: {}, clicks: null }; }
+  try { aiAvail = await api.aiAvailable(); } catch { /* sem IA */ }
+  try {
+    const st = await api.getSettings(); brandCfg = (st.settings && st.settings.brand) || {};
+    const lg = await api.brandLogo(); if (lg) brandLogo = await new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = lg; });
+  } catch { /* sem identidade visual */ }
+  if (hasTracks()) info.hasAudio = true;
   lastState = JSON.stringify(P);
   $('#tcTotal').textContent = fmt(info.duration);
   fitStage();

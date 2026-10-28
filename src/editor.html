@@ -117,6 +117,7 @@
       <span class="sep"></span>
       <button id="btnAddZoom" class="btn small">+ Zoom</button>
       <button id="btnAddText" class="btn small">+ Texto</button>
+      <button id="btnAddSub" class="btn small" title="Legenda no ponto atual">+ Legenda</button>
       <div class="spacer"></div>
       <span class="muted small">Arraste nas faixas para criar · arraste blocos para mover · bordas para ajustar</span>
       <label class="tl-zoom" title="Aproximar a linha do tempo">
@@ -132,6 +133,8 @@
         <div class="lab cut">Cortes</div>
         <div class="lab zoom">Zoom</div>
         <div class="lab notes" id="notesLabel">Anotações</div>
+        <div class="lab subs">Legendas</div>
+        <div class="lab voice">Narração</div>
       </div>
       <div id="tlScroll" class="tl-scroll">
         <div id="tlInner" class="tl-inner">
@@ -143,6 +146,8 @@
           </div>
           <div id="trkZoom" class="track zoom" data-track="zoom"></div>
           <div id="trkNotes" class="track notes" data-track="notes"></div>
+          <div id="trkSubs" class="track subs" data-track="subs"></div>
+          <div id="trkVoice" class="track voice" data-track="voice"></div>
           <div id="playhead" class="playhead"><span></span></div>
         </div>
       </div>
@@ -158,6 +163,8 @@
     </div>
   </div>
   <div id="toast" class="toast"></div>
+  <div id="auxMedia" hidden></div>
+  <script src="brand.js"></script>
   <script src="editor.js"></script>
 </body>
 </html>

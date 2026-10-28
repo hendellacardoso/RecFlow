@@ -14,6 +14,16 @@
     <div class="rec-controls">
       <button id="btnUndo" class="icon-btn" title="Desfazer (Ctrl+Z)" disabled><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/></svg></button>
       <button id="btnRedo" class="icon-btn" title="Refazer (Ctrl+Y)" disabled><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/></svg></button>
+      <div class="ai-menu" id="aiMenu">
+        <button id="btnAi" class="btn ai" title="Ajuda da inteligência artificial">✨ IA</button>
+        <div class="ai-pop" id="aiPop" hidden>
+          <button data-ai="fillScreen">Preencher itens vazios desta tela</button>
+          <button data-ai="fillAll">Preencher itens vazios de todas as telas</button>
+          <button data-ai="review">Revisar todos os textos</button>
+          <button data-ai="structure">Sugerir nomes das telas e capítulos</button>
+          <div class="ai-pop-hint" id="aiPopHint"></div>
+        </div>
+      </div>
       <button id="btnFolder" class="btn ghost" title="Abrir a pasta do manual">Pasta</button>
       <button id="btnHtml" class="btn" title="Abrir o manual no navegador">HTML</button>
       <button id="btnPdf" class="btn" title="Exportar em PDF">PDF</button>
@@ -84,6 +94,7 @@
   </div>
 
   <div id="loading" class="med-loading">Carregando manual…</div>
+  <div id="busy" class="med-busy" hidden><div><span class="spin"></span><span id="busyText">A IA está trabalhando…</span></div></div>
   <div id="toast" class="toast"></div>
   <script src="marks.js"></script>
   <script src="manual-editor.js"></script>

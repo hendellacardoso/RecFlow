@@ -51,6 +51,8 @@
     .btn { border: 1px solid #d1d5db; background: #fff; color: #374151; border-radius: 9px; padding: 7px 14px; font: 600 13.5px "Segoe UI", sans-serif; cursor: pointer; }
     .btn.ok { background: var(--c, #ff3b30); border-color: var(--c, #ff3b30); color: #fff; }
     .btn:hover { filter: brightness(.97); }
+    .btn.ai { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
+    .btn:disabled { opacity: .6; cursor: progress; }
     .hint { color: #9ca3af; font-size: 11.5px; margin-top: 8px; }
     .drawhint {
       position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(17, 20, 28, .9); color: #fff;
@@ -85,6 +87,7 @@
         <button data-shape="rect" title="Retângulo"><svg viewBox="0 0 24 16"><rect x="2" y="2" width="20" height="12"/></svg></button>
       </div>
       <div class="btns">
+        <button class="btn ai" id="aiBtn" hidden title="A IA olha a tela e sugere a descrição deste campo">✨ Sugerir</button>
         <button class="btn" id="cancel">Cancelar</button>
         <button class="btn ok" id="ok">OK</button>
       </div>

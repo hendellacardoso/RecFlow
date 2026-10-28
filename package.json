@@ -1,7 +1,7 @@
 {
   "name": "recflow",
   "productName": "RecFlow",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "RecFlow: gravador de tela para Windows com editor de vídeo",
   "main": "main.js",
   "author": "Hendell A. Cardoso <suporte@api2dev.com.br>",
@@ -36,6 +36,8 @@
       "main.js",
       "preload.js",
       "manual-docs.js",
+      "ai.js",
+      "hwrec.js",
       "src/**/*",
       "assets/**/*",
       "!assets/icon2.png",

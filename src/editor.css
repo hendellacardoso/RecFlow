@@ -133,3 +133,34 @@ body.editor { user-select: none; }
   body.editor .brand #fileName { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 @media (max-width: 1250px) { body.editor .dirty { display: none; } }
+
+/* Recursos novos: legendas, narração, sugestões, abas do painel */
+.inspector { width: 330px; }
+.block.sub { background: #d97706; }
+.block.voice { background: #db2777; cursor: grab; }
+.chip-type.sub { background: #d97706; } .chip-type.voice { background: #db2777; }
+.block.sugg { background: transparent !important; border: 1.5px dashed var(--muted); color: var(--muted); cursor: pointer; box-shadow: none; z-index: 1; }
+.block.sugg.zoom { border-color: var(--accent); color: var(--accent); }
+.block.sugg.cut { border-color: #e5484d; color: #e5484d; }
+.block.sugg:hover { background: var(--hover) !important; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: -2px 0 14px; }
+.tabs button { border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 99px; padding: 4px 10px; font: 12.5px "Segoe UI", sans-serif; cursor: pointer; }
+.tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.inspector h3 { margin: 16px 0 8px; }
+.inspector h3:first-of-type { margin-top: 4px; }
+.inspector .check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; margin-bottom: 8px; }
+.inspector input[type="range"] { accent-color: var(--accent); width: 100%; }
+.inspector select, .inspector input[type="text"], .inspector input[type="number"] { width: 100%; }
+.btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.media-box { background: var(--card); border-radius: 10px; padding: 10px; margin-bottom: 10px; display: grid; gap: 8px; }
+.media-name { font-size: 13px; font-weight: 600; word-break: break-all; }
+.media-name.none { color: var(--muted); font-weight: 400; }
+.sugg-list { display: grid; gap: 6px; margin: 8px 0; max-height: 260px; overflow: auto; }
+.sugg-item { display: flex; align-items: center; gap: 6px; background: var(--card); border-radius: 8px; padding: 6px 8px; font-size: 12.5px; }
+.sugg-item span { flex: 1; cursor: pointer; }
+.card-prev { width: 100%; border-radius: 8px; display: block; margin: 4px 0 10px; }
+.btn.ai { color: #a78bfa; border-color: color-mix(in srgb, #8b5cf6 45%, var(--line)); }
+.meta-out textarea { width: 100%; min-height: 90px; font: 13px "Segoe UI", sans-serif; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.meta-out label { margin-bottom: 10px; }
+.modal-card.wide { width: 620px; max-height: calc(100vh - 60px); overflow: auto; }
+.modal-card.wide .hint { word-break: normal; }

@@ -85,3 +85,18 @@ body.med { user-select: none; }
 .vt-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
 .vt-row span { flex: 1; }
 .vt-row input { width: 64px; text-align: center; padding: 5px 6px; font-variant-numeric: tabular-nums; }
+
+/* IA */
+.btn.ai { color: #a78bfa; border-color: color-mix(in srgb, #8b5cf6 45%, var(--line)); }
+.btn.ai:hover { background: color-mix(in srgb, #8b5cf6 14%, transparent); }
+.ai-menu { position: relative; }
+.ai-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 300px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px; box-shadow: 0 14px 40px var(--shadow); display: grid; gap: 2px; }
+.ai-pop button { text-align: left; border: 0; background: transparent; color: var(--text); padding: 9px 10px; border-radius: 8px; font: 13.5px "Segoe UI", sans-serif; cursor: pointer; }
+.ai-pop button:hover:not(:disabled) { background: var(--hover); }
+.ai-pop button:disabled { opacity: .45; cursor: default; }
+.ai-pop-hint { font-size: 12px; color: var(--muted); padding: 4px 10px 6px; }
+.mini.ai { color: #a78bfa; }
+.med-busy { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: grid; place-items: center; z-index: 40; }
+.med-busy > div { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 20px; display: flex; gap: 12px; align-items: center; box-shadow: 0 14px 40px var(--shadow); }
+.spin { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--line); border-top-color: #8b5cf6; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

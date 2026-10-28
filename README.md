@@ -29,6 +29,17 @@ Gravador de tela com editor de vídeo para Windows, feito com Electron (HTML, CS
 - Saída em **MP4 (H.264/AAC)** ou **WebM (VP9/Opus)**, de 15 a 60 fps e 4 níveis de qualidade
 - A janela do gravador pode ficar oculta no vídeo (Windows 10 2004 ou mais recente)
 - Tema claro, escuro ou igual ao Windows, com a cor de destaque do sistema e barra de rolagem fina
+- **Recuperação de gravações:** se o app ou o PC cair durante a gravação, na próxima abertura aparece a opção de recuperar o vídeo
+- **Espaço em disco:** aviso antes e durante a gravação, com parada segura quando o disco está quase cheio
+- **Limite por arquivo** (tempo ou tamanho): continua numa parte nova ou para a gravação
+- **Gravação pela placa de vídeo** (opcional): FFmpeg com NVENC (NVIDIA), Quick Sync (Intel) ou AMF (AMD), nos modos Tela inteira e Área
+- **Trilhas separadas** de microfone e som do sistema, com volume de cada uma no editor
+- **Zoom automático:** a posição dos cliques fica guardada e o editor sugere zooms; também sugere cortes nos silêncios
+- **Editor:** música de fundo (abaixa sozinha quando há voz), abertura e encerramento (vídeo, imagem ou cartão com a identidade visual), legendas e narração
+- **Identidade visual:** cores, logo e rodapé aplicados nos manuais e nos cartões do editor
+- **Mesclar manuais** (cada um vira um capítulo) e **traduzir manuais**
+- **Exportar e importar configurações**
+- **IA (opcional, com sua própria chave):** Anthropic, OpenAI, Google Gemini, serviços compatíveis com OpenAI (Groq, OpenRouter, Ollama, LM Studio) e API de voz própria (ex.: APIVoz). Sugere a descrição dos campos do manual, preenche e revisa textos, sugere nomes e capítulos, traduz, gera legendas, título/descrição/capítulos para o YouTube e narração. As chaves ficam criptografadas no Windows (DPAPI) e só são enviadas ao provedor escolhido
 
 ## Como rodar
 
@@ -66,14 +77,18 @@ src/countdown.*  Contagem regressiva
 src/manual.*     Janela de marcação do modo manual (detecção do campo via UI Automation do Windows)
 src/manual-editor.*  Editor de manual
 src/marks.js     Desenho das marcações (elipse/retângulo + número)
-manual-docs.js   Geração do manual: HTML, TXT, PDF e Word
+manual-docs.js   Geração do manual: HTML, TXT, PDF e Word; mesclar e copiar manuais
+ai.js            Credenciais de IA (criptografadas) e chamadas aos provedores
+hwrec.js         Gravação pelo FFmpeg com a placa de vídeo
+src/brand.js     Cartões de abertura/encerramento com a identidade visual
 assets/selfie_segmenter.tflite  Modelo de IA que separa a pessoa do fundo
 ```
 
-As configurações ficam em `%APPDATA%\RecFlow\settings.json` (as da versão anterior, "Gravador de Tela", são copiadas automaticamente). Os vídeos novos vão para `Vídeos\RecFlow` (dá para trocar na aba Vídeo).
+As configurações ficam em `%APPDATA%\RecFlow\settings.json` (as credenciais de IA em `ai-credentials.json`, criptografadas) (as da versão anterior, "Gravador de Tela", são copiadas automaticamente). Os vídeos novos vão para `Vídeos\RecFlow` (dá para trocar na aba Vídeo).
 
 ## Observações
 
+- Arquivos auxiliares de cada gravação (trilhas separadas, cliques, narrações) ficam na pasta oculta `.recflow`, ao lado dos vídeos.
 - Depois de atualizar o projeto, rode `npm install` de novo (FFmpeg, MediaPipe, RNNoise e docx vêm como pacotes).
 - O duplo clique em arquivos `.gtproj` funciona com o app instalado pelo `npm run dist`. Rodando com `npm start`, use "Abrir projeto…".
 

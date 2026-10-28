@@ -137,6 +137,35 @@ async function confirm() {
   else { saving = false; $('#ok').textContent = 'OK'; const h = document.querySelector('.hint'); h.style.color = '#dc2626'; h.textContent = `Não foi possível salvar: ${(r && r.error) || 'erro'}`; }
 }
 function cancel() { api.manualClose(); }
+// IA: recorta a região do campo (com a marcação) e manda junto uma miniatura da tela inteira
+async function suggest() {
+  if (!cur || !cur.rect) { $('#text').focus(); return; }
+  const b = $('#aiBtn'); b.disabled = true; b.textContent = '✨ Pensando…';
+  try {
+    const full = document.createElement('canvas');
+    full.width = init.imgW; full.height = init.imgH;
+    const fx = full.getContext('2d');
+    fx.drawImage(img, 0, 0); init.marks.forEach((m) => drawMark(fx, m, init.scale)); drawMark(fx, cur, init.scale);
+    const g = geom(cur.rect, cur.shape, init.scale).box;
+    const pad = Math.max(160 * init.scale, Math.max(g.w, g.h) * 0.8);
+    const x0 = Math.max(0, g.x - pad), y0 = Math.max(0, g.y - pad * 0.6);
+    const x1 = Math.min(init.imgW, g.x + g.w + pad), y1 = Math.min(init.imgH, g.y + g.h + pad * 0.6);
+    const crop = document.createElement('canvas');
+    crop.width = Math.round(x1 - x0); crop.height = Math.round(y1 - y0);
+    crop.getContext('2d').drawImage(full, x0, y0, x1 - x0, y1 - y0, 0, 0, crop.width, crop.height);
+    const k = Math.min(1, 1280 / init.imgW);
+    const small = document.createElement('canvas');
+    small.width = Math.round(init.imgW * k); small.height = Math.round(init.imgH * k);
+    small.getContext('2d').drawImage(full, 0, 0, small.width, small.height);
+    const r = await api.aiTask('describeField', {
+      crop: crop.toDataURL('image/png'), full: small.toDataURL('image/jpeg', 0.82),
+      fieldName: init.fieldName, screenName: init.firstOfScreen ? $('#screenName').value : init.screenName, title: init.title, text: $('#text').value.trim()
+    });
+    if (r.ok && r.data) { $('#text').value = r.data; }
+    else { const h = document.querySelector('.hint'); h.style.color = '#dc2626'; h.textContent = r.error || 'A IA não respondeu.'; }
+  } finally { b.disabled = false; b.textContent = '✨ Sugerir'; $('#text').focus(); }
+}
+$('#aiBtn').onclick = suggest;
 $('#ok').onclick = confirm;
 $('#cancel').onclick = cancel;
 $('#screenName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#text').focus(); } });
@@ -163,5 +192,6 @@ window.addEventListener('focus', () => { if (!$('#dialog').hidden && document.ac
   if (init.firstOfScreen) { $('#nameRow').hidden = false; $('#screenName').value = init.screenName || `Tela ${init.screenN}`; }
   setShape(init.shape);
   $('#drawHint').hidden = !!cur.rect;
+  $('#aiBtn').hidden = !init.ai;
   resize();
 })();

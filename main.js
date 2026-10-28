@@ -9,6 +9,8 @@ const os = require('os');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const mdocs = require('./manual-docs');
+const ai = require('./ai');
+const hwrec = require('./hwrec');
 
 // FFmpeg embutido (usado para finalizar gravações e exportar o vídeo editado)
 let ffmpegPath = null;
@@ -47,7 +49,7 @@ let drawing = false;
 let drawOpts = { tool: 'pen', color: '#ff3b30', width: 4 };
 let hookRunning = false;
 let pendingQuit = false;
-const rec = { active: false, paused: false, stream: null, file: null, displayId: null };
+const rec = { active: false, paused: false, stream: null, file: null, displayId: null, tracks: {}, clicks: [], parts: [], engine: 'browser', cap: null };
 
 /* ------------------------------------------------------------------ */
 /* Configurações                                                        */
@@ -66,6 +68,10 @@ function defaults() {
     keysShow: false, keysPos: 'bc', keysSize: 'm', keysCombosOnly: false, keysDuration: 1.5,
     wmEnabled: false, wmPath: '', wmPos: 'br', wmSize: 14, wmOpacity: 80,
     clickEffects: true, hideApp: true, showBorder: true, minimizeOnRecord: false,
+    engine: 'browser', hwEncoder: 'auto', hwGrabber: 'gdigrab', hwEncoders: null,
+    limitMode: 'off', limitMinutes: 30, limitMB: 2000, limitAction: 'split',
+    separateTracks: false, recordClicks: true,
+    brand: { name: '', color: '#e5484d', color2: '#111827', logoPath: '', footer: '', site: '' }, brandManuals: true,
     hotkeys: { record: 'F12', pause: 'Shift+F12', screenshot: 'F11', draw: 'Ctrl+Shift+D', clear: 'Ctrl+Shift+X', webcam: 'Ctrl+Shift+W', manualMark: 'Insert', manualNewScreen: 'Shift+Insert' },
     schedules: []
   };
@@ -84,7 +90,7 @@ function loadSettings() {
   } catch { /* ignora */ }
   try {
     const s = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
-    return { ...d, ...s, hotkeys: { ...d.hotkeys, ...(s.hotkeys || {}) } };
+    return { ...d, ...s, hotkeys: { ...d.hotkeys, ...(s.hotkeys || {}) }, brand: { ...d.brand, ...(s.brand || {}) } };
   } catch { return d; }
 }
 function saveSettings() {
@@ -94,6 +100,24 @@ function saveSettings() {
   } catch (e) { console.error('Falha ao salvar configurações', e); }
 }
 function ensureOutputDir() { fs.mkdirSync(settings.outputDir, { recursive: true }); }
+// Arquivos auxiliares de cada gravação (trilhas separadas, cliques, segmentos) ficam em .recflow, ao lado do vídeo
+function sidecar(file, kind) { return path.join(path.dirname(file), '.recflow', `${path.basename(file)}.${kind}`); }
+function ensureSidecarDir(file) {
+  const d = path.join(path.dirname(file), '.recflow');
+  if (!fs.existsSync(d)) {
+    fs.mkdirSync(d, { recursive: true });
+    if (process.platform === 'win32') { try { spawn('attrib', ['+h', d], { windowsHide: true }); } catch { /* ignora */ } }
+  }
+  return d;
+}
+function freeBytes(dir) {
+  try { fs.mkdirSync(dir, { recursive: true }); const st = fs.statfsSync(dir); return st.bavail * st.bsize; } catch { return null; }
+}
+// Identidade visual nos manuais
+function applyBrand() {
+  const b = settings.brand || {};
+  mdocs.setBrand(settings.brandManuals ? { color: b.color, color2: b.color2, name: b.name, footer: b.footer, logoFile: b.logoPath } : null);
+}
 function insideOutput(p) {
   const base = path.resolve(settings.outputDir) + path.sep;
   return path.resolve(p).startsWith(base);
@@ -425,8 +449,18 @@ function keysConfig() {
   if (settings.mode === 'area' && settings.region) rect = { x: settings.region.x, y: settings.region.y, w: settings.region.w, h: settings.region.h };
   return { pos: settings.keysPos, size: settings.keysSize, duration: settings.keysDuration, rect };
 }
+// Área gravada (coordenadas DIP) para guardar a posição dos cliques
+function clickTarget() {
+  if (settings.mode === 'area' && settings.region) {
+    const r = settings.region; const d = getDisplay(r.displayId);
+    return { x: d.bounds.x + r.x, y: d.bounds.y + r.y, width: r.w, height: r.h };
+  }
+  if (settings.mode === 'screen') return getDisplay(settings.displayId).bounds;
+  return null;
+}
+const wantClicks = () => !!settings.recordClicks && (settings.mode === 'screen' || settings.mode === 'area');
 function startHook() {
-  if (!uIOhook || hookRunning || !(settings.clickEffects || settings.keysShow)) return;
+  if (!uIOhook || hookRunning || !(settings.clickEffects || settings.keysShow || (rec.active && wantClicks()))) return;
   uIOhook.removeAllListeners('mousedown');
   uIOhook.removeAllListeners('keydown');
   if (settings.keysShow) {
@@ -442,11 +476,18 @@ function startHook() {
       overlayWin.webContents.send('key', { name, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey });
     });
   }
-  if (!settings.clickEffects) { try { uIOhook.start(); hookRunning = true; } catch (err) { console.error('uiohook', err); } return; }
+  const target = rec.active && wantClicks() ? clickTarget() : null;
   uIOhook.on('mousedown', (e) => {
-    if (!alive(overlayWin)) return;
     let pt = { x: e.x, y: e.y };
     if (process.platform === 'win32' && typeof screen.screenToDipPoint === 'function') pt = screen.screenToDipPoint(pt);
+    // linha do tempo dos cliques (sugestões de zoom no editor)
+    if (target && rec.active && !rec.paused && pt.x >= target.x && pt.y >= target.y && pt.x <= target.x + target.width && pt.y <= target.y + target.height) {
+      const t = recElapsed();
+      if (t != null && rec.clicks.length < 20000) {
+        rec.clicks.push({ t: Math.round((t - (rec.partOffset || 0)) * 100) / 100, x: Math.round(((pt.x - target.x) / target.width) * 1000) / 1000, y: Math.round(((pt.y - target.y) / target.height) * 1000) / 1000, b: e.button });
+      }
+    }
+    if (!settings.clickEffects || !alive(overlayWin)) return;
     const b = overlayWin.getBounds();
     if (pt.x < b.x || pt.y < b.y || pt.x > b.x + b.width || pt.y > b.y + b.height) return;
     overlayWin.webContents.send('click', { x: pt.x - b.x, y: pt.y - b.y, button: e.button });
@@ -713,11 +754,15 @@ function openManualEditor(dir) {
   w.on('closed', () => manualEditors.delete(dir));
 }
 function readLogo() {
-  try {
-    if (!settings.wmPath) return null;
-    const img = nativeImage.createFromPath(settings.wmPath);
-    return img.isEmpty() ? null : img.toDataURL();
-  } catch { return null; }
+  // logo da identidade visual; se não houver, o logo da marca d'água
+  for (const p of [settings.brandManuals && settings.brand && settings.brand.logoPath, settings.wmPath]) {
+    try {
+      if (!p || !fs.existsSync(p)) continue;
+      const img = nativeImage.createFromPath(p);
+      if (!img.isEmpty()) return img.toDataURL();
+    } catch { /* tenta o próximo */ }
+  }
+  return null;
 }
 const safeName = (s) => String(s || 'Manual').replace(/[\\/:*?"<>|]+/g, '-').trim().slice(0, 80) || 'Manual';
 
@@ -845,17 +890,192 @@ async function finalizeRecording(file) {
   }
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Trilhas separadas, cliques, disco e recuperação                      */
+/* ------------------------------------------------------------------ */
+const MB = 1024 * 1024;
+const fmtSize = (b) => (b >= 1024 * MB ? `${(b / 1024 / MB).toFixed(1)} GB` : `${Math.round(b / MB)} MB`);
+
+function openTracks(names) {
+  rec.tracks = {};
+  (names || []).filter((n) => n === 'mic' || n === 'sys').forEach((n) => {
+    ensureSidecarDir(rec.file);
+    const file = sidecar(rec.file, `${n}.webm`);
+    rec.tracks[n] = { file, stream: fs.createWriteStream(file) };
+  });
+}
+function closeTracks(tracks) {
+  return Promise.all(Object.values(tracks || {}).map((t) => new Promise((r) => (t.stream ? t.stream.end(r) : r()))));
+}
+// o MediaRecorder grava WebM sem duração no cabeçalho: uma cópia rápida corrige
+async function fixTrack(f) {
+  if (!ffmpegPath || !f || !fs.existsSync(f) || !fs.statSync(f).size) return;
+  const tmp = `${f}.tmp.webm`;
+  try { await runFfmpeg(['-i', f, '-c', 'copy', tmp]); fs.renameSync(tmp, f); } catch { fs.rmSync(tmp, { force: true }); }
+}
+function saveClicks(file) {
+  if (!file || !rec.clicks.length) return;
+  try {
+    const t = clickTarget();
+    ensureSidecarDir(file);
+    fs.writeFileSync(sidecar(file, 'clicks.json'), JSON.stringify({ version: 1, target: t ? { w: t.width, h: t.height } : null, clicks: rec.clicks }));
+  } catch { /* ignora */ }
+}
+
+// diário das gravações em andamento: se o app cair, dá para recuperar na próxima abertura
+const journalPath = () => path.join(app.getPath('userData'), 'recovery.json');
+function readJournal() { try { const j = JSON.parse(fs.readFileSync(journalPath(), 'utf8')); return Array.isArray(j) ? j : []; } catch { return []; } }
+function writeJournal(l) { try { fs.mkdirSync(path.dirname(journalPath()), { recursive: true }); fs.writeFileSync(journalPath(), JSON.stringify(l, null, 2)); } catch { /* ignora */ } }
+function journalUpdate() {
+  const entry = {
+    id: rec.id, file: rec.file, engine: rec.engine, startedAt: new Date(rec.t0 || Date.now()).toISOString(),
+    segments: rec.cap ? rec.cap.segments.slice() : undefined, audio: rec.engine === 'ffmpeg' ? rec.audioFile : undefined,
+    tracks: Object.fromEntries(Object.entries(rec.tracks || {}).map(([k, t]) => [k, t.file]))
+  };
+  writeJournal([...readJournal().filter((e) => e.id !== rec.id), entry]);
+}
+function journalDrop(id) { writeJournal(readJournal().filter((e) => e.id !== id)); }
+let recoverable = [];
+function scanRecovery() {
+  const all = readJournal().filter((e) => !(rec.active && e.id === rec.id));
+  recoverable = all.map((e) => {
+    const files = [e.file, ...(e.segments || []), e.audio].filter((f) => f && fs.existsSync(f));
+    const size = files.reduce((t, f) => t + fs.statSync(f).size, 0);
+    return size > 0 ? { ...e, size } : null;
+  }).filter(Boolean);
+  const keep = new Set(recoverable.map((e) => e.id));
+  writeJournal(readJournal().filter((e) => keep.has(e.id) || (rec.active && e.id === rec.id)));
+  return recoverable;
+}
+const SIDE_KINDS = ['mic.webm', 'sys.webm', 'clicks.json'];
+async function repairRecording(id) {
+  const e = recoverable.find((x) => x.id === id);
+  if (!e) throw new Error('Gravação não encontrada.');
+  if (!ffmpegPath) throw new Error('FFmpeg não encontrado. Rode "npm install" novamente.');
+  let out;
+  if (e.engine === 'ffmpeg') {
+    out = fs.existsSync(e.file) ? e.file.replace(/\.mp4$/i, '_recuperado.mp4') : e.file;
+    const listFile = sidecar(e.file, 'concat.txt');
+    await runFfmpeg(hwrec.muxArgs({ segments: e.segments || [], audio: e.audio, out, listFile }));
+    fs.rmSync(listFile, { force: true });
+  } else {
+    const ext = path.extname(e.file);
+    out = `${e.file.slice(0, -ext.length)}_recuperado${ext}`;
+    try {
+      await runFfmpeg(['-err_detect', 'ignore_err', '-fflags', '+genpts+discardcorrupt', '-i', e.file, '-map', '0', '-c', 'copy', ...(ext.toLowerCase() === '.mp4' ? ['-movflags', '+faststart'] : []), out]);
+    } catch {
+      out = `${e.file.slice(0, -ext.length)}_recuperado.mp4`;
+      await runFfmpeg(['-err_detect', 'ignore_err', '-i', e.file, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', out]);
+    }
+  }
+  const info = await probe(out);
+  if (!info || !info.duration) { fs.rmSync(out, { force: true }); throw new Error('O arquivo estava danificado demais para recuperar.'); }
+  for (const f of Object.values(e.tracks || {})) await fixTrack(f);
+  // arquivos auxiliares passam a acompanhar o vídeo recuperado
+  if (path.resolve(out) !== path.resolve(e.file)) {
+    SIDE_KINDS.forEach((k) => { const a = sidecar(e.file, k); if (fs.existsSync(a)) { try { fs.renameSync(a, sidecar(out, k)); } catch { /* ignora */ } } });
+  }
+  fs.rmSync(sidecar(e.file, 'logo.png'), { force: true });
+  const junk = e.engine === 'ffmpeg' ? [...(e.segments || []), e.audio] : [e.file];
+  for (const f of junk) {
+    if (f && fs.existsSync(f) && path.resolve(f) !== path.resolve(out)) { try { await shell.trashItem(f); } catch { fs.rmSync(f, { force: true }); } }
+  }
+  journalDrop(id); recoverable = recoverable.filter((x) => x.id !== id);
+  send('files:changed');
+  return { file: out, name: path.basename(out), duration: info.duration };
+}
+async function discardRecording(id) {
+  const e = recoverable.find((x) => x.id === id) || readJournal().find((x) => x.id === id);
+  if (e) {
+    const files = [e.file, ...(e.segments || []), e.audio, ...Object.values(e.tracks || {}), ...SIDE_KINDS.map((k) => sidecar(e.file, k))];
+    for (const f of files) { if (f && fs.existsSync(f)) { try { await shell.trashItem(f); } catch { fs.rmSync(f, { force: true }); } } }
+  }
+  journalDrop(id); recoverable = recoverable.filter((x) => x.id !== id);
+  send('files:changed');
+}
+
+// espaço livre durante a gravação (aviso e parada segura) e tamanho na gravação pelo FFmpeg
+let diskTimer = null, diskWarned = false;
+function startDiskMonitor() {
+  clearInterval(diskTimer); diskWarned = false;
+  diskTimer = setInterval(() => {
+    if (!rec.active) { stopDiskMonitor(); return; }
+    const free = freeBytes(path.dirname(rec.file));
+    if (free != null && free < 400 * MB) {
+      send('toast', `O disco está quase cheio (${fmtSize(free)} livres). A gravação foi encerrada para não perder o vídeo.`, true);
+      stopDiskMonitor(); send('rec:force-stop'); return;
+    }
+    if (free != null && free < 2048 * MB && !diskWarned) { diskWarned = true; send('toast', `Atenção: só ${fmtSize(free)} livres no disco da gravação.`, true); }
+    if (rec.engine === 'ffmpeg' && rec.cap) {
+      let a = 0; try { a = rec.audioFile && fs.existsSync(rec.audioFile) ? fs.statSync(rec.audioFile).size : 0; } catch { /* ignora */ }
+      send('rec:bytes', rec.cap.bytes() + a);
+    }
+    if (rec.clicks.length) saveClicks(rec.file);
+  }, 3000);
+}
+function stopDiskMonitor() { clearInterval(diskTimer); diskTimer = null; }
+
+// Gravação pelo FFmpeg (GPU): monta a captura da tela/área
+function physRect(r) {
+  if (process.platform === 'win32' && typeof screen.dipToScreenRect === 'function') {
+    const p = screen.dipToScreenRect(null, { x: r.x, y: r.y, width: r.width, height: r.height });
+    return { x: p.x, y: p.y, w: p.width, h: p.height };
+  }
+  return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+}
+async function beginFfmpeg() {
+  if (!ffmpegPath) throw new Error('FFmpeg não encontrado. Rode "npm install" novamente.');
+  if (settings.mode !== 'screen' && settings.mode !== 'area') throw new Error('A gravação pelo FFmpeg funciona nos modos Tela inteira e Área.');
+  const t = clickTarget();
+  const d = settings.mode === 'area' ? getDisplay(settings.region.displayId) : getDisplay(settings.displayId);
+  const r = physRect(t); const dp = physRect(d.bounds);
+  r.w = Math.max(2, Math.floor(r.w / 2) * 2); r.h = Math.max(2, Math.floor(r.h / 2) * 2);
+  const fps = Number(settings.fps) || 30;
+  if (!settings.hwEncoders) settings.hwEncoders = await hwrec.detect(ffmpegPath);
+  const okIds = settings.hwEncoders.map((x) => x.id);
+  let enc = settings.hwEncoder;
+  if (enc === 'auto' || !okIds.includes(enc)) enc = (settings.hwEncoders.find((x) => x.id !== 'libx264') || hwrec.CPU).id;
+  const input = hwrec.inputArgs({
+    grabber: settings.hwGrabber, rect: r, local: { x: r.x - dp.x, y: r.y - dp.y }, fps,
+    outputIdx: Math.max(0, screen.getAllDisplays().findIndex((x) => x.id === d.id))
+  });
+  let wm = null;
+  if (settings.wmEnabled && settings.wmPath && fs.existsSync(settings.wmPath)) {
+    const img = nativeImage.createFromPath(settings.wmPath);
+    if (!img.isEmpty()) {
+      const ww = Math.max(16, Math.round((r.w * (settings.wmSize || 14)) / 100 / 2) * 2);
+      const sz = img.getSize(); const wh = Math.round((ww * sz.height) / sz.width);
+      const m = Math.round(Math.min(r.w, r.h) * 0.025); const pos = settings.wmPos || 'br';
+      const file = sidecar(rec.file, 'logo.png');
+      fs.writeFileSync(file, img.toPNG());
+      wm = { file, width: ww, opacity: settings.wmOpacity || 80, x: pos.includes('l') ? m : r.w - ww - m, y: pos.includes('t') ? m : r.h - wh - m };
+    }
+  }
+  rec.cap = new hwrec.Capture({ ffmpeg: ffmpegPath, dir: path.dirname(sidecar(rec.file, 'x')), base: path.basename(rec.file), input, encoder: enc, fps, mbps: Number(settings.bitrate) || 8, wm });
+  rec.cap.onExit = () => { if (rec.active && !rec.paused) { send('toast', 'O FFmpeg parou de gravar inesperadamente. A gravação foi encerrada.', true); send('rec:force-stop'); } };
+  rec.encoder = enc;
+  await rec.cap.startSegment();
+}
+
 const num = (n) => Number(n).toFixed(3);
 
 // Monta o comando de exportação do editor
+// Ordem: vídeo (zoom, anotações, legendas) -> áudio (trilhas, narrações) -> cortes -> música -> abertura/encerramento
 function buildExport(spec, tmpDir) {
   const W = Math.floor(spec.width / 2) * 2, H = Math.floor(spec.height / 2) * 2;
   const fps = Math.max(10, Math.min(60, Math.round(spec.fps || 30)));
+  const fmt = spec.format || 'mp4';
   const args = ['-i', spec.input];
+  let inputs = 1;
+  const addInput = (...a) => { args.push(...a); return inputs++; };
   const parts = [];
   let v = '[0:v]';
   let n = 0;
   const label = () => `[x${n++}]`;
+  const vol = (p) => (Math.max(0, Math.min(400, Number(p ?? 100))) / 100).toFixed(2);
+  const A = 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo';
+  const writePng = (name, dataUrl) => { const f = path.join(tmpDir, name); fs.writeFileSync(f, Buffer.from(dataUrl.split(',')[1], 'base64')); return f; };
 
   // tamanho par (exigência do H.264)
   if (W !== spec.width || H !== spec.height) { const o = label(); parts.push(`${v}crop=${W}:${H}:0:0${o}`); v = o; }
@@ -878,18 +1098,61 @@ function buildExport(spec, tmpDir) {
 
   // textos e desenhos (imagens PNG transparentes do tamanho do vídeo)
   (spec.overlays || []).forEach((ov, i) => {
-    const png = path.join(tmpDir, `ov${i}.png`);
-    fs.writeFileSync(png, Buffer.from(ov.png.split(',')[1], 'base64'));
-    args.push('-i', png);
+    const idx = addInput('-i', writePng(`ov${i}.png`, ov.png));
     const o = label();
-    parts.push(`${v}[${i + 1}:v]overlay=0:0:eof_action=repeat:enable='between(t,${num(ov.start)},${num(ov.end)})'${o}`);
+    parts.push(`${v}[${idx}:v]overlay=0:0:eof_action=repeat:enable='between(t,${num(ov.start)},${num(ov.end)})'${o}`);
     v = o;
   });
+
+  // legendas: uma sequência de imagens (concat) sobreposta ao vídeo
+  const subs = (spec.subs || []).filter((s) => s.end > s.start && s.png).sort((a, b) => a.start - b.start);
+  if (subs.length) {
+    const blank = nativeImage.createFromBuffer(Buffer.alloc(W * H * 4), { width: W, height: H }).toPNG();
+    fs.writeFileSync(path.join(tmpDir, 'blank.png'), blank);
+    const lines = ['ffconcat version 1.0'];
+    let t = 0;
+    subs.forEach((s, i) => {
+      const st = Math.max(t, s.start), en = Math.max(st + 0.04, s.end);
+      if (st - t > 0.001) lines.push("file 'blank.png'", `duration ${num(st - t)}`);
+      writePng(`sub${i}.png`, s.png);
+      lines.push(`file 'sub${i}.png'`, `duration ${num(en - st)}`);
+      t = en;
+    });
+    lines.push("file 'blank.png'", 'duration 1', "file 'blank.png'");
+    const list = path.join(tmpDir, 'subs.ffconcat');
+    fs.writeFileSync(list, `${lines.join('\n')}\n`);
+    const idx = addInput('-f', 'concat', '-safe', '0', '-i', list);
+    const o = label();
+    parts.push(`${v}[${idx}:v]overlay=0:0:eof_action=pass:format=auto${o}`);
+    v = o;
+  }
+
+  // áudio na linha do tempo original: trilhas separadas (ou o áudio do vídeo) + narrações
+  let a = null;
+  const au = spec.audio || {};
+  if (fmt !== 'gif') {
+    const srcs = [];
+    const tracks = (au.tracks || []).filter((t) => t.file && fs.existsSync(t.file));
+    if (tracks.length) {
+      tracks.forEach((t) => { const i = addInput('-i', t.file); const o = label(); parts.push(`[${i}:a]${A},volume=${vol(t.volume)}${o}`); srcs.push(o); });
+    } else if (spec.hasAudio) {
+      const o = label(); parts.push(`[0:a]${A},volume=${vol(au.main)}${o}`); srcs.push(o);
+    }
+    const voices = (au.voices || []).filter((x) => x.file && fs.existsSync(x.file));
+    if (voices.length && !srcs.length) { const o = label(); parts.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${num(spec.duration)}${o}`); srcs.push(o); }
+    voices.forEach((x) => {
+      const i = addInput('-i', x.file); const o = label(); const ms = Math.max(0, Math.round(x.start * 1000));
+      parts.push(`[${i}:a]${A},volume=${vol(x.volume)},adelay=${ms}|${ms}${o}`); srcs.push(o);
+    });
+    if (srcs.length === 1) a = srcs[0];
+    else if (srcs.length > 1) {
+      const o = label(); parts.push(`${srcs.join('')}amix=inputs=${srcs.length}:duration=longest:normalize=0:dropout_transition=0,atrim=duration=${num(spec.duration)}${o}`); a = o;
+    }
+  }
 
   // cortes: mantém só os trechos escolhidos
   const keep = spec.keep && spec.keep.length ? spec.keep : [[0, spec.duration]];
   const full = keep.length === 1 && keep[0][0] <= 0.01 && keep[0][1] >= spec.duration - 0.01;
-  let a = spec.hasAudio && spec.format !== 'gif' ? '[0:a]' : null;   // GIF não tem som
   if (!full) {
     const k = keep.length;
     const vs = keep.map((_, i) => `[vs${i}]`), as = keep.map((_, i) => `[as${i}]`);
@@ -901,15 +1164,57 @@ function buildExport(spec, tmpDir) {
       seq.push(`[vt${i}]`);
       if (a) { parts.push(`${as[i]}atrim=start=${num(s)}:end=${num(e)},asetpts=PTS-STARTPTS[at${i}]`); seq.push(`[at${i}]`); }
     });
-    parts.push(`${seq.join('')}concat=n=${k}:v=1:a=${a ? 1 : 0}[vout]${a ? '[aout]' : ''}`);
-    v = '[vout]'; if (a) a = '[aout]';
-  } else {
-    const o = '[vout]'; parts.push(`${v}null${o}`); v = o;
-    if (a) a = '0:a?';
+    parts.push(`${seq.join('')}concat=n=${k}:v=1:a=${a ? 1 : 0}[vcut]${a ? '[acut]' : ''}`);
+    v = '[vcut]'; if (a) a = '[acut]';
+  }
+  const mainDur = keep.reduce((t, [s, e]) => t + (e - s), 0);
+
+  // música de fundo (abaixa sozinha quando há voz)
+  const mu = au.music;
+  if (fmt !== 'gif' && mu && mu.file && fs.existsSync(mu.file)) {
+    const i = mu.loop !== false ? addInput('-stream_loop', '-1', '-i', mu.file) : addInput('-i', mu.file);
+    const fi = Math.min(Number(mu.fadeIn) || 0, mainDur / 2), fo = Math.min(Number(mu.fadeOut) || 0, mainDur / 2);
+    let chain = `[${i}:a]${A},atrim=duration=${num(mainDur)},volume=${vol(mu.volume)}`;
+    if (fi > 0) chain += `,afade=t=in:d=${num(fi)}`;
+    if (fo > 0) chain += `,afade=t=out:st=${num(Math.max(0, mainDur - fo))}:d=${num(fo)}`;
+    chain += `,apad=whole_dur=${num(mainDur)}[mus]`;
+    parts.push(chain);
+    if (a) {
+      if (mu.duck !== false) {
+        parts.push(`${a}asplit=2[am1][am2]`, '[mus][am2]sidechaincompress=threshold=0.03:ratio=12:attack=20:release=700[musd]', '[am1][musd]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[amus]');
+      } else parts.push(`${a}[mus]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[amus]`);
+      a = '[amus]';
+    } else a = '[mus]';
   }
 
-  const outDuration = keep.reduce((t, [s, e]) => t + (e - s), 0);
-  const fmt = spec.format || 'mp4';
+  // abertura e encerramento
+  let outDuration = mainDur;
+  const clips = [['intro', spec.intro], ['outro', spec.outro]].filter(([, c]) => c && c.dur > 0 && (c.file || c.png));
+  if (clips.length) {
+    const withAudio = !!a;
+    const made = {};
+    clips.forEach(([tag, c]) => {
+      let i;
+      const dur = Math.max(0.5, Math.min(60, Number(c.dur)));
+      if (c.kind === 'video') i = addInput('-t', num(dur), '-i', c.file);
+      else i = addInput('-loop', '1', '-framerate', String(fps), '-t', num(dur), '-i', c.png ? writePng(`${tag}.png`, c.png) : c.file);
+      const fade = c.kind === 'video' ? '' : `,fade=t=in:d=0.4,fade=t=out:st=${num(Math.max(0, dur - 0.5))}:d=0.5`;
+      parts.push(`[${i}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps},format=yuv420p${fade},trim=duration=${num(dur)},setpts=PTS-STARTPTS[${tag}v]`);
+      if (withAudio) {
+        if (c.kind === 'video' && c.hasAudio) parts.push(`[${i}:a]${A},atrim=duration=${num(dur)},apad=whole_dur=${num(dur)},asetpts=PTS-STARTPTS[${tag}a]`);
+        else parts.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${num(dur)}[${tag}a]`);
+      }
+      made[tag] = true;
+      outDuration += dur;
+    });
+    parts.push(`${v}fps=${fps},format=yuv420p,setsar=1[mainv]`);
+    if (withAudio) parts.push(`${a}${A}[maina]`);
+    const order = ['intro', 'main', 'outro'].filter((t) => t === 'main' || made[t]);
+    const seq = order.map((t) => (t === 'main' ? `[mainv]${withAudio ? '[maina]' : ''}` : `[${t}v]${withAudio ? `[${t}a]` : ''}`)).join('');
+    parts.push(`${seq}concat=n=${order.length}:v=1:a=${withAudio ? 1 : 0}[vfin]${withAudio ? '[afin]' : ''}`);
+    v = '[vfin]'; if (withAudio) a = '[afin]';
+  }
+  if (v === '[0:v]') { parts.push('[0:v]null[vout]'); v = '[vout]'; }
 
   if (fmt === 'gif') {
     // GIF: 12 qps, até 960 px de largura, paleta otimizada
@@ -1052,6 +1357,93 @@ function checkSchedules() {
 }
 
 /* ------------------------------------------------------------------ */
+/* IA: tarefas de apoio (manual e vídeo)                                */
+/* ------------------------------------------------------------------ */
+const AI_LINKS = ['https://console.anthropic.com/settings/keys', 'https://platform.openai.com/api-keys', 'https://aistudio.google.com/apikey', 'https://console.groq.com/keys'];
+const LANG_NAMES = { 'pt-BR': 'português do Brasil', 'pt-PT': 'português de Portugal', en: 'inglês', es: 'espanhol', fr: 'francês', it: 'italiano', de: 'alemão' };
+const langName = (l) => LANG_NAMES[l] || LANG_NAMES[String(l).split('-')[0]] || l;
+const cleanText = (t) => String(t || '').trim().replace(/^["“'`]+|["”'`]+$/g, '').trim();
+const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+
+async function aiTask(name, p) {
+  const lang = langName(ai.lang());
+  const sys = `Você ajuda a produzir manuais de uso e vídeos tutoriais de sistemas. Escreva sempre em ${lang}, de forma clara e objetiva.`;
+  switch (name) {
+    case 'describeField': {
+      const prompt = [
+        'A primeira imagem mostra um componente de uma tela de sistema, contornado e numerado. A segunda (se houver) é a tela inteira, para contexto.',
+        `Manual: "${p.title || ''}". Tela: "${p.screenName || ''}". Componente identificado automaticamente: "${p.fieldName || 'não identificado'}".`,
+        p.text ? `Rascunho do usuário: "${p.text}". Melhore-o mantendo o sentido.` : '',
+        'Escreva UMA instrução curta (1 ou 2 frases, até 220 caracteres) dizendo ao usuário o que preencher, escolher ou fazer nesse componente.',
+        'Use o imperativo. Não cite "imagem", "destaque", "contorno" nem o número. Responda apenas com o texto.'
+      ].filter(Boolean).join('\n');
+      return cleanText(await ai.chat({ system: sys, prompt, images: [p.crop, p.full].filter(Boolean), maxTokens: 400 }));
+    }
+    case 'texts': {
+      // revisar ou traduzir uma lista [{ id, text }] -> { id: texto }
+      const items = (p.items || []).filter((x) => x && String(x.text || '').trim());
+      const out = {};
+      for (const part of chunk(items, 50)) {
+        const prompt = p.mode === 'translate'
+          ? `Traduza para ${langName(p.lang)} os textos de um manual de sistema abaixo. Mantenha o tom instrutivo, nomes de botões e campos coerentes entre si e quebras de linha.\nResponda APENAS com um array JSON no formato [{"id":"...","text":"..."}], com os mesmos ids.\n\n${JSON.stringify(part)}`
+          : `Revise os textos de um manual de sistema abaixo: corrija ortografia, gramática, pontuação e clareza; mantenha o sentido, o tom instrutivo e um tamanho parecido. Não invente informações.\nResponda APENAS com um array JSON no formato [{"id":"...","text":"..."}], com os mesmos ids.\n\n${JSON.stringify(part)}`;
+        const res = ai.parseJson(await ai.chat({ system: p.mode === 'translate' ? `Você é tradutor técnico de software.` : sys, prompt, maxTokens: 8000 }));
+        (Array.isArray(res) ? res : []).forEach((r) => { if (r && r.id != null && typeof r.text === 'string') out[String(r.id)] = r.text.trim(); });
+      }
+      return out;
+    }
+    case 'structure': {
+      const list = (p.screens || []).map((s) => ({ n: s.n, name: s.name, group: s.group || '', items: (s.items || []).slice(0, 12) }));
+      const prompt = `Estas são as telas de um manual de sistema, na ordem, com os textos de cada item. Sugira um nome curto e descritivo (até 50 caracteres) para cada tela e agrupe telas seguidas em capítulos (nome até 40 caracteres) quando fizer sentido; telas sem relação podem ficar sem capítulo ("").\nManual: "${p.title || ''}".\nResponda APENAS com JSON no formato [{"n":1,"name":"...","group":"..."}].\n\n${JSON.stringify(list)}`;
+      const res = ai.parseJson(await ai.chat({ system: sys, prompt, maxTokens: 4000 }));
+      return Array.isArray(res) ? res : [];
+    }
+    case 'fillScreen': {
+      const prompt = `A imagem é uma tela de sistema com componentes marcados por números em círculos. Para cada item da lista, escreva uma instrução curta (1 ou 2 frases, até 220 caracteres, no imperativo) do que o usuário deve fazer ou preencher naquele componente. "fieldName" ajuda a identificar o componente e "text" é um rascunho (pode estar vazio).\nManual: "${p.title || ''}". Tela: "${p.screenName || ''}".\nResponda APENAS com JSON no formato [{"num":1,"text":"..."}].\n\n${JSON.stringify(p.marks || [])}`;
+      const res = ai.parseJson(await ai.chat({ system: sys, prompt, images: [p.image].filter(Boolean), maxTokens: 3000 }));
+      return Array.isArray(res) ? res : [];
+    }
+    case 'videoMeta': {
+      const prompt = `Abaixo está a transcrição de um vídeo tutorial, com o tempo de cada trecho (mm:ss).\nCrie: um título atrativo (até 80 caracteres), uma descrição de 2 a 4 parágrafos curtos para YouTube e uma lista de capítulos (o primeiro em 00:00, no máximo 12, com títulos de até 50 caracteres).\nResponda APENAS com JSON no formato {"title":"...","description":"...","chapters":[{"t":"00:00","title":"..."}]}.\n\n${String(p.transcript || '').slice(0, 60000)}`;
+      return ai.parseJson(await ai.chat({ system: sys, prompt, maxTokens: 3000 }));
+    }
+    case 'improveNarration': {
+      const prompt = `Reescreva o texto abaixo para ser narrado em voz alta num vídeo tutorial: frases curtas, naturais e claras, sem mudar o sentido. Responda apenas com o texto.\n\n${p.text || ''}`;
+      return cleanText(await ai.chat({ system: sys, prompt, maxTokens: 1500 }));
+    }
+    default: throw new Error('Tarefa de IA desconhecida.');
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Exportar / importar configurações                                    */
+/* ------------------------------------------------------------------ */
+// itens que dependem deste computador ficam de fora
+const NO_EXPORT = ['windowId', 'windowName', 'displayId', 'region', 'webcamBounds', 'micDeviceId', 'webcamDeviceId', 'schedules', 'hwEncoders'];
+function importSettings(file) {
+  let data;
+  try { data = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return { error: 'Arquivo inválido.' }; }
+  if (!data || data.app !== 'recflow' || data.kind !== 'settings' || typeof data.settings !== 'object') return { error: 'Este arquivo não é de configurações do RecFlow.' };
+  const inc = { ...data.settings };
+  NO_EXPORT.forEach((k) => delete inc[k]);
+  const d = defaults();
+  Object.keys(inc).forEach((k) => { if (!(k in d)) delete inc[k]; });
+  // caminhos que não existem neste computador são ignorados
+  ['outputDir', 'manualDir'].forEach((k) => { if (inc[k] && !fs.existsSync(inc[k])) delete inc[k]; });
+  if (inc.wmPath && !fs.existsSync(inc.wmPath)) { delete inc.wmPath; inc.wmEnabled = false; }
+  if (inc.brand && inc.brand.logoPath && !fs.existsSync(inc.brand.logoPath)) inc.brand = { ...inc.brand, logoPath: '' };
+  settings = { ...settings, ...inc, hotkeys: { ...settings.hotkeys, ...(inc.hotkeys || {}) }, brand: { ...settings.brand, ...(inc.brand || {}) } };
+  saveSettings();
+  nativeTheme.themeSource = settings.theme || 'system';
+  if (alive(mainWin)) mainWin.setContentProtection(!!settings.hideApp);
+  if (settings.manualEnabled) uiaStart(); else uiaStop();
+  syncCamWindow(); applyBrand();
+  const failed = registerHotkeys();
+  send('settings:changed', settings);
+  return { ok: true, failed };
+}
+
+/* ------------------------------------------------------------------ */
 /* IPC                                                                  */
 /* ------------------------------------------------------------------ */
 function registerIpc() {
@@ -1059,12 +1451,13 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => ({ version: require('./package.json').version, settings, failedHotkeys, hookAvailable: !!uIOhook, accent: accentColor(), ffmpeg: !!ffmpegPath }));
   ipcMain.handle('settings:set', (_e, patch) => {
     const hotkeysChanged = !!patch.hotkeys;
-    settings = { ...settings, ...patch, hotkeys: { ...settings.hotkeys, ...(patch.hotkeys || {}) } };
+    settings = { ...settings, ...patch, hotkeys: { ...settings.hotkeys, ...(patch.hotkeys || {}) }, brand: { ...settings.brand, ...(patch.brand || {}) } };
     saveSettings();
     if ('hideApp' in patch && alive(mainWin)) mainWin.setContentProtection(!!settings.hideApp);
     if ('theme' in patch) nativeTheme.themeSource = settings.theme || 'system';
     if (['webcam', 'webcamShape', 'webcamDeviceId', 'webcamMirror', 'webcamWidth', 'webcamBlur', 'webcamBlurStrength', 'mode', 'region', 'displayId'].some((k) => k in patch)) syncCamWindow();
     if ('manualEnabled' in patch) { if (settings.manualEnabled) uiaStart(); else uiaStop(); }
+    if ('brand' in patch || 'brandManuals' in patch) { settings.brand = { ...defaults().brand, ...settings.brand }; applyBrand(); }
     const failed = hotkeysChanged || 'manualEnabled' in patch ? registerHotkeys() : [];
     return { settings, failed };
   });
@@ -1114,41 +1507,112 @@ function registerIpc() {
 
   ipcMain.handle('region:select', () => selectRegion());
 
-  ipcMain.handle('rec:begin', (_e, { ext, displayId }) => {
+  ipcMain.handle('rec:begin', async (_e, opts = {}) => {
+    const { ext, displayId, tracks = [], engine = 'browser', continuation = false } = opts;
     ensureOutputDir();
-    rec.file = path.join(settings.outputDir, `Gravacao_${stamp()}.${ext === 'webm' ? 'webm' : 'mp4'}`);
-    rec.stream = fs.createWriteStream(rec.file);
+    const free = freeBytes(settings.outputDir);
+    if (free != null && free < 500 * MB) return { error: `Espaço insuficiente no disco (${fmtSize(free)} livres).` };
+    const useFfmpeg = engine === 'ffmpeg';
+    rec.file = path.join(settings.outputDir, `Gravacao_${stamp()}.${useFfmpeg || ext !== 'webm' ? 'mp4' : 'webm'}`);
+    rec.engine = useFfmpeg ? 'ffmpeg' : 'browser';
+    rec.id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    rec.clicks = []; rec.partOffset = 0; rec.part = 1; rec.base = rec.file;
+    if (!continuation) rec.sessionFiles = [];
+    rec.sessionFiles.push(rec.file);
+    rec.tracks = {};
+    try {
+      if (useFfmpeg) {
+        ensureSidecarDir(rec.file);
+        rec.audioFile = sidecar(rec.file, 'audio.webm');
+        rec.stream = opts.audio ? fs.createWriteStream(rec.audioFile) : null;
+        await beginFfmpeg();
+      } else {
+        rec.stream = fs.createWriteStream(rec.file);
+      }
+      openTracks(tracks);
+    } catch (err) {
+      try { if (rec.stream) rec.stream.destroy(); } catch { /* ignora */ }
+      rec.stream = null; rec.cap = null;
+      return { error: err.message };
+    }
+    journalUpdate();
     rec.active = true; rec.paused = false; rec.displayId = displayId || cursorDisplayId();
     rec.t0 = Date.now(); rec.pausedTotal = 0; rec.pauseAt = null;
-    if (manual) manualEnd(true);   // cada gravação começa um manual novo
+    if (manual && !continuation) manualEnd(true);   // cada gravação começa um manual novo
     if (settings.mode === 'area' && settings.showBorder) showBorder();
     if (alive(camWin)) { if (!camInsideTarget()) placeCam('br'); camWin.moveTop(); }
     if (settings.mode === 'screen' || settings.mode === 'area') {
-      if ((settings.clickEffects || settings.keysShow) && uIOhook) { ensureOverlay(rec.displayId); startHook(); }
+      if ((settings.clickEffects || settings.keysShow) && uIOhook) ensureOverlay(rec.displayId);
+      if (uIOhook && (settings.clickEffects || settings.keysShow || wantClicks())) { stopHook(); startHook(); }
     }
-    if (settings.minimizeOnRecord && alive(mainWin)) mainWin.minimize();
+    if (settings.minimizeOnRecord && alive(mainWin) && !continuation) mainWin.minimize();
+    startDiskMonitor();
     updateTray();
-    return rec.file;
+    const encLabel = rec.engine === 'ffmpeg' ? ((settings.hwEncoders || []).find((x) => x.id === rec.encoder) || { label: rec.encoder }).label : null;
+    return { file: rec.file, engine: rec.engine, encoder: encLabel };
   });
 
   ipcMain.handle('rec:chunk', (_e, buf) => new Promise((resolve) => {
     if (!rec.stream) return resolve(false);
     rec.stream.write(Buffer.from(buf), () => resolve(true));
   }));
+  // trilhas separadas (microfone e som do sistema)
+  ipcMain.handle('rec:trackChunk', (_e, name, buf) => new Promise((resolve) => {
+    const t = rec.tracks[name];
+    if (!t || !t.stream) return resolve(false);
+    t.stream.write(Buffer.from(buf), () => resolve(true));
+  }));
 
-  ipcMain.handle('rec:end', () => new Promise((resolve) => {
+  // divide a gravação em partes (limite de tempo/tamanho), sem parar a captura
+  ipcMain.handle('rec:split', async () => {
+    if (!rec.active || rec.engine !== 'browser') return null;
+    const prev = rec.file, prevTracks = rec.tracks;
+    await new Promise((r) => (rec.stream ? rec.stream.end(r) : r()));
+    await closeTracks(prevTracks);
+    saveClicks(prev);
+    rec.part += 1;
+    const ext = path.extname(rec.base);
+    rec.file = `${rec.base.slice(0, -ext.length)}_parte${rec.part}${ext}`;
+    rec.stream = fs.createWriteStream(rec.file);
+    rec.sessionFiles.push(rec.file);
+    rec.clicks = []; rec.partOffset = recElapsed() || 0;
+    openTracks(Object.keys(prevTracks));
+    journalUpdate();
+    finalizeRecording(prev).then(() => Promise.all(Object.values(prevTracks).map((t) => fixTrack(t.file)))).then(() => send('files:changed'));
+    return rec.file;
+  });
+
+  ipcMain.handle('rec:end', (_e, opts = {}) => new Promise((resolve) => {
     const file = rec.file;
     const finish = async () => {
-      rec.active = false; rec.paused = false; rec.stream = null;
+      const tracks = rec.tracks; const cap = rec.cap; const engine = rec.engine; const id = rec.id;
+      rec.active = false; rec.paused = false; rec.stream = null; rec.cap = null;
+      stopDiskMonitor();
       closeBorder(); stopHook();
       if (alive(overlayWin)) overlayWin.webContents.send('keys:config', null);
       if (!drawing) closeOverlay();
       updateTray();
-      if (manual && manual.recFile === file) { if (manual.screens.some((x) => x.marks.length)) manualWriteDocs(); manualEnd(true); }
+      saveClicks(file);
+      await closeTracks(tracks);
+      if (!opts.split && manual && rec.sessionFiles && rec.sessionFiles.includes(manual.recFile)) { if (manual.screens.some((x) => x.marks.length)) manualWriteDocs(); manualEnd(true); }
+      if (engine === 'ffmpeg') {
+        if (cap) await cap.stopSegment();
+        try {
+          const listFile = sidecar(file, 'concat.txt');
+          await runFfmpeg(hwrec.muxArgs({ segments: cap ? cap.segments : [], audio: rec.audioFile, out: file, listFile }));
+          [listFile, rec.audioFile, sidecar(file, 'logo.png'), ...(cap ? cap.segments : [])].forEach((f) => { try { fs.rmSync(f, { force: true }); } catch { /* ignora */ } });
+          journalDrop(id);
+        } catch (err) {
+          send('toast', `Não foi possível juntar a gravação: ${err.message}. Ela aparece para recuperar na próxima abertura.`, true);
+          resolve(null); return;
+        }
+      } else journalDrop(id);
       if (pendingQuit) { resolve(file); setImmediate(() => app.quit()); return; }
-      await finalizeRecording(file);
+      if (engine !== 'ffmpeg') await finalizeRecording(file);
+      await Promise.all(Object.values(tracks).map((t) => fixTrack(t.file)));
       resolve(file);
-      if (settings.openEditor && file && fs.existsSync(file) && fs.statSync(file).size > 0) openEditor(file);
+      send('files:changed');
+      if (!opts.split && settings.openEditor && file && fs.existsSync(file) && fs.statSync(file).size > 0) openEditor(file);
     };
     if (rec.stream) rec.stream.end(finish); else finish();
   }));
@@ -1158,9 +1622,28 @@ function registerIpc() {
     if (!p && rec.pauseAt) { rec.pausedTotal += Date.now() - rec.pauseAt; rec.pauseAt = null; }
     rec.paused = !!p; updateTray();
   });
+  // gravação pelo FFmpeg: a pausa fecha o segmento; a retomada abre outro (espera o 1º quadro)
+  ipcMain.handle('rec:enginePause', async (_e, p) => {
+    if (!rec.active || rec.engine !== 'ffmpeg' || !rec.cap) return true;
+    try {
+      if (p) await rec.cap.stopSegment(); else { await rec.cap.startSegment(); journalUpdate(); }
+      return true;
+    } catch (err) { send('toast', `FFmpeg: ${err.message}`, true); return false; }
+  });
+  ipcMain.handle('rec:diskFree', () => freeBytes(settings.outputDir));
+  ipcMain.handle('rec:encoders', async (_e, refresh) => {
+    if (!ffmpegPath) return [];
+    if (!settings.hwEncoders || refresh) { settings.hwEncoders = await hwrec.detect(ffmpegPath); saveSettings(); }
+    return settings.hwEncoders;
+  });
+  ipcMain.handle('recovery:list', () => scanRecovery().map((e) => ({ id: e.id, name: path.basename(e.file), startedAt: e.startedAt, size: e.size, engine: e.engine })));
+  ipcMain.handle('recovery:repair', async (_e, id) => {
+    try { return { ok: true, ...(await repairRecording(id)) }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('recovery:discard', async (_e, id) => { await discardRecording(id); return true; });
 
   // modo manual
-  ipcMain.handle('manual:init', () => (manualCtx ? manualCtx.init : null));
+  ipcMain.handle('manual:init', () => (manualCtx ? { ...manualCtx.init, ai: ai.available().text, title: manual ? manual.title : '' } : null));
   ipcMain.handle('manual:save', (_e, data) => {
     const c = manualCtx;
     if (!c || !manual) return { ok: false };
@@ -1220,7 +1703,13 @@ function registerIpc() {
       });
       const vAbs = doc.video ? path.resolve(dir, doc.video) : null;
       const video = vAbs && fs.existsSync(vAbs) ? { abs: vAbs, rel: doc.video, url: pathToFileURL(vAbs).href, name: path.basename(vAbs) } : null;
-      return { ok: true, doc, originals, video, videoMissing: !!(doc.video && !video), hasLogo: !!readLogo() };
+      const screenVideos = {};
+      doc.screens.forEach((sc) => {
+        if (!sc.video || screenVideos[sc.video]) return;
+        const abs = path.resolve(dir, sc.video);
+        if (fs.existsSync(abs)) screenVideos[sc.video] = { abs, rel: sc.video, url: pathToFileURL(abs).href, name: path.basename(abs) };
+      });
+      return { ok: true, doc, originals, video, screenVideos, videoMissing: !!(doc.video && !video), hasLogo: !!readLogo(), ai: ai.available().text };
     } catch (err) { return { ok: false, error: err.message }; }
   });
   ipcMain.handle('mdoc:save', (_e, dir, doc, pngs, originals) => {
@@ -1318,7 +1807,13 @@ function registerIpc() {
   ipcMain.handle('files:show', (_e, p) => { if (insideOutput(p)) shell.showItemInFolder(p); });
   ipcMain.handle('files:delete', async (_e, p) => {
     if (!insideOutput(p) || p === rec.file) return false;
-    await shell.trashItem(p); return true;
+    await shell.trashItem(p);
+    // arquivos auxiliares (trilhas, cliques, narrações) vão junto
+    try {
+      const d = path.join(path.dirname(p), '.recflow'); const base = `${path.basename(p)}.`;
+      if (fs.existsSync(d)) for (const f of fs.readdirSync(d)) if (f.startsWith(base)) await shell.trashItem(path.join(d, f)).catch(() => {});
+    } catch { /* ignora */ }
+    return true;
   });
   ipcMain.handle('folder:open', () => { ensureOutputDir(); return shell.openPath(settings.outputDir); });
   ipcMain.handle('folder:choose', async () => {
@@ -1470,6 +1965,166 @@ function registerIpc() {
   ipcMain.handle('editor:showFile', (_e, p) => { if (p && fs.existsSync(p)) shell.showItemInFolder(p); });
   ipcMain.handle('editor:openFile', (_e, p) => (p && fs.existsSync(p) ? shell.openPath(p) : null));
 
+
+  /* ---------- editor: trilhas, mídia, silêncios, legendas, narração ---------- */
+  ipcMain.handle('editor:sidecars', (_e, file) => {
+    const out = { tracks: {}, clicks: null };
+    if (!file) return out;
+    ['mic', 'sys'].forEach((k) => { const f = sidecar(file, `${k}.webm`); if (fs.existsSync(f) && fs.statSync(f).size > 0) out.tracks[k] = { file: f, url: pathToFileURL(f).href }; });
+    try { out.clicks = JSON.parse(fs.readFileSync(sidecar(file, 'clicks.json'), 'utf8')); } catch { out.clicks = null; }
+    return out;
+  });
+  ipcMain.handle('editor:pickMedia', async (e, kind) => {
+    const filters = {
+      music: [{ name: 'Áudio', extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'webm'] }],
+      clip: [{ name: 'Vídeo ou imagem', extensions: ['mp4', 'webm', 'mov', 'mkv', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }]
+    }[kind] || [];
+    const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { title: kind === 'music' ? 'Música de fundo' : 'Vídeo ou imagem', properties: ['openFile'], filters });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const f = r.filePaths[0];
+    const isImg = /\.(png|jpe?g|webp|bmp|gif)$/i.test(f);
+    const info = isImg ? {} : (await probe(f)) || {};
+    return { file: f, name: path.basename(f), url: pathToFileURL(f).href, kind: isImg ? 'image' : kind === 'music' ? 'audio' : 'video', duration: info.duration || null, hasAudio: !!info.hasAudio };
+  });
+  ipcMain.handle('editor:silences', async (_e, file, opts = {}) => {
+    const db = Math.max(-70, Math.min(-10, Number(opts.db) || -35));
+    const min = Math.max(0.3, Math.min(10, Number(opts.min) || 1));
+    const src = opts.track && fs.existsSync(opts.track) ? opts.track : file;
+    return new Promise((resolve) => {
+      if (!ffmpegPath) return resolve([]);
+      const p = spawn(ffmpegPath, ['-hide_banner', '-nostdin', '-i', src, '-vn', '-af', `silencedetect=n=${db}dB:d=${min}`, '-f', 'null', '-'], { windowsHide: true });
+      let err = '';
+      p.stderr.on('data', (d) => { err += d; });
+      p.on('error', () => resolve([]));
+      p.on('close', () => {
+        const out = []; let st = null;
+        err.split('\n').forEach((l) => {
+          let m = /silence_start: (-?[\d.]+)/.exec(l); if (m) st = Math.max(0, Number(m[1]));
+          m = /silence_end: ([\d.]+)/.exec(l); if (m && st != null) { out.push([st, Number(m[1])]); st = null; }
+        });
+        resolve(out);
+      });
+    });
+  });
+  ipcMain.handle('editor:saveText', async (e, defaultPath, text, kind = 'srt') => {
+    const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
+      defaultPath, filters: kind === 'srt' ? [{ name: 'Legenda SRT', extensions: ['srt'] }] : [{ name: 'Texto', extensions: ['txt'] }]
+    });
+    if (r.canceled || !r.filePath) return null;
+    fs.writeFileSync(r.filePath, `﻿${text}`, 'utf8');
+    return r.filePath;
+  });
+  ipcMain.handle('editor:transcribe', async (e, file, opts = {}) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'recflow-stt-'));
+    try {
+      const src = opts.track && fs.existsSync(opts.track) ? opts.track : file;
+      const progress = (m) => { if (!e.sender.isDestroyed()) e.sender.send('ai:progress', m); };
+      progress('Extraindo o áudio…');
+      const CH = 1200;   // 20 min por parte (limite de tamanho das APIs)
+      await runFfmpeg(['-i', src, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '48k', '-f', 'segment', '-segment_time', String(CH), path.join(tmp, 'p%03d.mp3')]);
+      const chunks = fs.readdirSync(tmp).filter((f) => f.endsWith('.mp3')).sort();
+      const segs = [];
+      for (let i = 0; i < chunks.length; i++) {
+        progress(chunks.length > 1 ? `Transcrevendo parte ${i + 1} de ${chunks.length}…` : 'Transcrevendo…');
+        const r = await ai.transcribe(path.join(tmp, chunks[i]), { language: opts.language });
+        r.forEach((s) => segs.push({ start: s.start + i * CH, end: s.end == null ? null : s.end + i * CH, text: s.text }));
+      }
+      return { ok: true, segments: segs };
+    } catch (err) { return { ok: false, error: err.message }; } finally { fs.rm(tmp, { recursive: true, force: true }, () => {}); }
+  });
+  ipcMain.handle('editor:narrate', async (_e, videoFile, text, opts = {}) => {
+    try {
+      const { buffer, ext } = await ai.tts(String(text || '').slice(0, 4000), opts);
+      if (!buffer || buffer.length < 100) throw new Error('A API de voz não devolveu áudio.');
+      ensureSidecarDir(videoFile);
+      const f = sidecar(videoFile, `narr-${Date.now().toString(36)}.${ext}`);
+      fs.writeFileSync(f, buffer);
+      const info = (await probe(f)) || {};
+      return { ok: true, file: f, url: pathToFileURL(f).href, duration: info.duration || 2 };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+
+  /* ---------- IA ---------- */
+  const guard = async (fn) => { try { return { ok: true, data: await fn() }; } catch (err) { return { ok: false, error: err.message }; } };
+  ipcMain.handle('ai:list', () => ai.list());
+  ipcMain.handle('ai:save', (_e, p) => guard(() => ai.save(p)));
+  ipcMain.handle('ai:remove', (_e, id) => guard(() => ai.remove(id)));
+  ipcMain.handle('ai:setUse', (_e, use, lang) => guard(() => ai.setUse(use, lang)));
+  ipcMain.handle('ai:test', (_e, id) => guard(() => ai.test(id)));
+  ipcMain.handle('ai:models', (_e, id) => guard(() => ai.models(id)));
+  ipcMain.handle('ai:available', () => ai.available());
+  ipcMain.handle('ai:task', (_e, name, payload) => guard(() => aiTask(name, payload || {})));
+  ipcMain.handle('ai:openLink', (_e, url) => { if (AI_LINKS.includes(url)) shell.openExternal(url); });
+
+  /* ---------- manuais: mesclar e traduzir ---------- */
+  ipcMain.handle('mdoc:merge', (_e, dirs, opts) => guard(() => {
+    const dir = mdocs.mergeManuals(manualRoot(), dirs, opts || {});
+    return { dir };
+  }));
+  ipcMain.handle('mdoc:translate', (e, dir, lang) => guard(async () => {
+    const progress = (m) => { if (!e.sender.isDestroyed()) e.sender.send('ai:progress', m); };
+    progress('Traduzindo o manual…');
+    const src = mdocs.loadManual(dir);
+    const items = [{ id: 'title', text: src.title }, ...(src.subtitle ? [{ id: 'subtitle', text: src.subtitle }] : [])];
+    src.screens.forEach((s, i) => {
+      items.push({ id: `s${i}`, text: s.name });
+      if (s.group) items.push({ id: `g${i}`, text: s.group });
+      s.marks.forEach((m, j) => { if (m.text) items.push({ id: `m${i}_${j}`, text: m.text }); });
+    });
+    const tr = await aiTask('texts', { mode: 'translate', lang, items });
+    const code = String(lang).split('-')[0].toLowerCase();
+    const { dir: dest, doc } = mdocs.copyManual(dir, code);
+    if (tr.title) doc.title = tr.title;
+    if (tr.subtitle) doc.subtitle = tr.subtitle;
+    doc.screens.forEach((s, i) => {
+      if (tr[`s${i}`]) s.name = tr[`s${i}`];
+      if (tr[`g${i}`]) s.group = tr[`g${i}`];
+      s.marks.forEach((m, j) => { if (tr[`m${i}_${j}`]) m.text = tr[`m${i}_${j}`]; });
+    });
+    doc.updatedAt = new Date().toISOString();
+    mdocs.writeDocs(dest, mdocs.normalize(doc, dest));
+    return { dir: dest };
+  }));
+
+  /* ---------- identidade visual ---------- */
+  ipcMain.handle('brand:chooseLogo', async (e) => {
+    const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Logo da identidade visual', properties: ['openFile'],
+      filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }]
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const img = nativeImage.createFromPath(r.filePaths[0]);
+    if (img.isEmpty()) return { error: 'Imagem inválida.' };
+    settings.brand = { ...settings.brand, logoPath: r.filePaths[0] }; saveSettings(); applyBrand();
+    return { path: r.filePaths[0], dataUrl: img.toDataURL() };
+  });
+  ipcMain.handle('brand:logo', () => {
+    const p = settings.brand && settings.brand.logoPath;
+    if (!p || !fs.existsSync(p)) return null;
+    const img = nativeImage.createFromPath(p);
+    return img.isEmpty() ? null : img.toDataURL();
+  });
+
+  /* ---------- exportar / importar configurações ---------- */
+  ipcMain.handle('settings:export', async (e) => {
+    const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Exportar configurações', defaultPath: path.join(app.getPath('documents'), `RecFlow-configuracoes_${stamp().slice(0, 10)}.json`),
+      filters: [{ name: 'Configurações do RecFlow', extensions: ['json'] }]
+    });
+    if (r.canceled || !r.filePath) return null;
+    const data = { ...settings };
+    NO_EXPORT.forEach((k) => delete data[k]);
+    fs.writeFileSync(r.filePath, JSON.stringify({ app: 'recflow', kind: 'settings', version: require('./package.json').version, exportedAt: new Date().toISOString(), settings: data }, null, 2));
+    return r.filePath;
+  });
+  ipcMain.handle('settings:import', async (e) => {
+    const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Importar configurações', properties: ['openFile'], filters: [{ name: 'Configurações do RecFlow', extensions: ['json'] }]
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    return importSettings(r.filePaths[0]);
+  });
+
   ipcMain.handle('overlay:init', () => ({ drawing, drawOpts, keys: rec.active && settings.keysShow ? keysConfig() : null }));
   ipcMain.handle('toolbar:init', () => drawOpts);
   ipcMain.on('draw:toggle', (_e, on) => setDrawing(on === undefined || on === null ? !drawing : !!on));
@@ -1497,6 +2152,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     if (process.platform === 'win32') app.setAppUserModelId('br.com.api2dev.recflow');
     settings = loadSettings();
+    applyBrand();
     nativeTheme.themeSource = settings.theme || 'system';
     // gt://app/<caminho> -> arquivo dentro da pasta do aplicativo (somente leitura)
     protocol.handle('gt', (req) => {
@@ -1513,7 +2169,7 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc();
     createMainWindow();
     if (settings.manualEnabled) uiaStart();
-    if (process.env.RECFLOW_TEST) global.__recflow = { manualMark, manualStatus, manualEnd, mdocs };
+    if (process.env.RECFLOW_TEST) global.__recflow = { manualMark, manualStatus, manualEnd, mdocs, ai, buildExport, aiTask, rec, scanRecovery };
     const proj = projectFromArgv(process.argv);
     if (proj) openProject(proj);
     syncCamWindow();

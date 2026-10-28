@@ -20,8 +20,20 @@ contextBridge.exposeInMainWorld('api', {
   // gravação
   recBegin: (opts) => invoke('rec:begin', opts),
   recChunk: (buf) => invoke('rec:chunk', buf),
-  recEnd: () => invoke('rec:end'),
+  recEnd: (opts) => invoke('rec:end', opts),
   recPaused: (p) => send('rec:paused', p),
+  recTrackChunk: (name, buf) => invoke('rec:trackChunk', name, buf),
+  recSplit: () => invoke('rec:split'),
+  recEnginePause: (p) => invoke('rec:enginePause', p),
+  recDiskFree: () => invoke('rec:diskFree'),
+  recEncoders: (refresh) => invoke('rec:encoders', refresh),
+  recoveryList: () => invoke('recovery:list'),
+  recoveryRepair: (id) => invoke('recovery:repair', id),
+  recoveryDiscard: (id) => invoke('recovery:discard', id),
+  settingsExport: () => invoke('settings:export'),
+  settingsImport: () => invoke('settings:import'),
+  brandChooseLogo: () => invoke('brand:chooseLogo'),
+  brandLogo: () => invoke('brand:logo'),
 
   // captura de imagem
   screenshot: () => invoke('screenshot:take'),
@@ -62,6 +74,23 @@ contextBridge.exposeInMainWorld('api', {
   editorCancel: () => send('editor:cancel'),
   editorShowFile: (p) => invoke('editor:showFile', p),
   editorOpenFile: (p) => invoke('editor:openFile', p),
+  editorSidecars: (file) => invoke('editor:sidecars', file),
+  editorPickMedia: (kind) => invoke('editor:pickMedia', kind),
+  editorSilences: (file, opts) => invoke('editor:silences', file, opts),
+  editorSaveText: (def, text, kind) => invoke('editor:saveText', def, text, kind),
+  editorTranscribe: (file, opts) => invoke('editor:transcribe', file, opts),
+  editorNarrate: (file, text, opts) => invoke('editor:narrate', file, text, opts),
+
+  // IA (as chaves nunca chegam à interface)
+  aiList: () => invoke('ai:list'),
+  aiSave: (p) => invoke('ai:save', p),
+  aiRemove: (id) => invoke('ai:remove', id),
+  aiSetUse: (use, lang) => invoke('ai:setUse', use, lang),
+  aiTest: (id) => invoke('ai:test', id),
+  aiModels: (id) => invoke('ai:models', id),
+  aiAvailable: () => invoke('ai:available'),
+  aiTask: (name, payload) => invoke('ai:task', name, payload),
+  aiOpenLink: (url) => invoke('ai:openLink', url),
 
   // projetos (.gtproj)
   projectLoad: (p) => invoke('project:load', p),
@@ -97,6 +126,8 @@ contextBridge.exposeInMainWorld('api', {
   mdocOpenFolder: (dir) => invoke('mdoc:openFolder', dir),
   mdocOpenFile: (f) => invoke('mdoc:openFile', f),
   mdocHasLogo: () => invoke('mdoc:hasLogo'),
+  mdocMerge: (dirs, opts) => invoke('mdoc:merge', dirs, opts),
+  mdocTranslate: (dir, lang) => invoke('mdoc:translate', dir, lang),
 
   // eventos vindos do processo principal
   on: (channel, fn) => {

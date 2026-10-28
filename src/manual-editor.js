@@ -10,6 +10,8 @@ let doc = null;            // manual.json
 let images = [];           // Image do print original de cada tela (mesma ordem de doc.screens)
 let replaced = [];         // dataURL quando o print foi trocado (senão null)
 let video = null;          // { rel, url, name }
+let screenVideos = {};     // vídeos próprios de telas (manual mesclado)
+let aiOn = false;
 let sel = 0;               // tela selecionada
 let selMark = -1;          // marcação selecionada
 let addMode = false;
@@ -79,7 +81,7 @@ function renderScreens() {
     const im = el('img'); im.src = replaced[i] || (images[i] && images[i].src) || ''; im.alt = '';
     const info = el('div');
     if (s.group) info.appendChild(el('div', 'grp', s.group));
-    info.append(el('div', 'nm', `${i + 1}. ${s.name || `Tela ${i + 1}`}`), el('div', 'mt', `${s.marks.length} item(ns)${Number.isFinite(s.videoTime) && video ? ` · ▶ ${fmtT(s.videoTime)}` : ''}`));
+    info.append(el('div', 'nm', `${i + 1}. ${s.name || `Tela ${i + 1}`}`), el('div', 'mt', `${s.marks.length} item(ns)${Number.isFinite(s.videoTime) && (video || (s.video && screenVideos[s.video])) ? ` · ▶ ${fmtT(s.videoTime)}` : ''}`));
     const acts = el('div', 'acts');
     const mk = (txt, title, fn, dis, cls = '') => { const b = el('button', `mini ${cls}`, txt); b.title = title; b.disabled = dis; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
     acts.append(
@@ -103,6 +105,7 @@ function renderScreen() {
   $('#addHint').hidden = !addMode;
   cv.classList.toggle('adding', addMode);
   $('#vtInput').value = fmtT(s.videoTime);
+  syncPlayer();
   fitCanvas(); draw(); renderItems();
 }
 function fitCanvas() {
@@ -165,7 +168,9 @@ function renderItems() {
     col.oninput = () => { m.color = col.value; n.style.background = m.color; draw(); };
     col.onchange = () => { commit(); renderItems(); };
     const mk = (txt, title, fn, dis, cls = '') => { const b = el('button', `mini ${cls}`, txt); b.title = title; b.disabled = dis; b.onclick = fn; return b; };
-    opts.append(shp, col, el('span', 'grow'),
+    const aiB = mk('✨', 'Sugerir a descrição com IA', () => suggestItem(i, aiB), false, 'ai');
+    aiB.hidden = !aiOn;
+    opts.append(shp, col, el('span', 'grow'), aiB,
       mk('↑', 'Subir (renumera)', () => moveMark(i, -1), i === 0),
       mk('↓', 'Descer (renumera)', () => moveMark(i, 1), i === s.marks.length - 1),
       mk('✕', 'Excluir item', () => deleteMark(i), false, 'del'));
@@ -274,15 +279,24 @@ cv.addEventListener('pointerup', () => {
 cv.addEventListener('dblclick', () => { const ta = $$('.item textarea')[selMark]; if (ta) ta.focus(); });
 
 /* ---------------- vídeo ---------------- */
+// vídeo da tela atual (num manual mesclado cada tela pode ter o seu)
+function screenVideo() {
+  const s = doc && doc.screens[sel];
+  if (s && s.video && screenVideos[s.video]) return screenVideos[s.video];
+  return video;
+}
+function syncPlayer() {
+  const v = screenVideo(); const pl = $('#player');
+  $('#playerBox').hidden = !v;
+  if (v && pl.dataset.src !== v.url) { pl.src = v.url; pl.dataset.src = v.url; }
+  if (!v) { pl.removeAttribute('src'); pl.dataset.src = ''; }
+}
 function renderVideo() {
   const nm = $('#vidName');
   nm.classList.toggle('missing', !video && !!doc.video);
   nm.textContent = video ? video.name : doc.video ? `Vídeo não encontrado: ${doc.video}` : 'Nenhum vídeo';
   $('#btnVidRemove').disabled = !doc.video;
-  $('#playerBox').hidden = !video;
-  const pl = $('#player');
-  if (video && pl.dataset.src !== video.url) { pl.src = video.url; pl.dataset.src = video.url; }
-  if (!video) { pl.removeAttribute('src'); pl.dataset.src = ''; }
+  syncPlayer();
 }
 $('#btnVidPick').onclick = async () => {
   const v = await api.mdocPickVideo(DIR); if (!v) return;
@@ -309,19 +323,105 @@ $('#btnReplace').onclick = replacePrint;
 $('#btnUndo').onclick = undo;
 $('#btnRedo').onclick = redo;
 
+/* ---------------- IA ---------------- */
+function markedCanvas(i) {
+  const img = images[i]; const c = document.createElement('canvas');
+  c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+  doc.screens[i].marks.forEach((m) => drawMark(x, m, scaleOf(i)));
+  return c;
+}
+function scaledJpeg(canvas, max = 1600) {
+  const k = Math.min(1, max / canvas.width);
+  const c = document.createElement('canvas'); c.width = Math.round(canvas.width * k); c.height = Math.round(canvas.height * k);
+  c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+function busy(on, text) { $('#busy').hidden = !on; if (text) $('#busyText').textContent = text; }
+async function suggestItem(i, btn) {
+  const s = scr(); const m = s.marks[i];
+  const full = markedCanvas(sel); const sc = scaleOf(sel);
+  const g = geom(m.rect, m.shape, sc).box;
+  const pad = Math.max(160 * sc, Math.max(g.w, g.h) * 0.8);
+  const x0 = Math.max(0, g.x - pad), y0 = Math.max(0, g.y - pad * 0.6);
+  const x1 = Math.min(full.width, g.x + g.w + pad), y1 = Math.min(full.height, g.y + g.h + pad * 0.6);
+  const crop = document.createElement('canvas'); crop.width = Math.round(x1 - x0); crop.height = Math.round(y1 - y0);
+  crop.getContext('2d').drawImage(full, x0, y0, x1 - x0, y1 - y0, 0, 0, crop.width, crop.height);
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const r = await api.aiTask('describeField', { crop: crop.toDataURL('image/png'), full: scaledJpeg(full, 1280), fieldName: m.fieldName, screenName: s.name, title: doc.title, text: m.text });
+  if (btn) { btn.disabled = false; btn.textContent = '✨'; }
+  if (!r.ok) { toast(r.error, true); return; }
+  m.text = r.data; commit(); renderItems();
+  toast('Descrição sugerida pela IA. Revise antes de salvar.');
+}
+async function fillScreens(idxs) {
+  let changed = 0;
+  for (let n = 0; n < idxs.length; n++) {
+    const i = idxs[n]; const s = doc.screens[i];
+    const empty = s.marks.filter((m) => !String(m.text || '').trim());
+    if (!empty.length) continue;
+    busy(true, `Preenchendo a tela ${i + 1} (${n + 1} de ${idxs.length})…`);
+    const r = await api.aiTask('fillScreen', {
+      image: scaledJpeg(markedCanvas(i)), title: doc.title, screenName: s.name,
+      marks: s.marks.map((m) => ({ num: m.num, fieldName: m.fieldName || '', text: m.text || '' }))
+    });
+    if (!r.ok) { busy(false); toast(r.error, true); break; }
+    r.data.forEach((x) => { const m = s.marks.find((mm) => mm.num === Number(x.num)); if (m && !String(m.text || '').trim() && x.text) { m.text = String(x.text).trim(); changed++; } });
+  }
+  busy(false);
+  if (changed) { commit(); renderAll(); }
+  toast(changed ? `${changed} descrição(ões) preenchida(s) pela IA. Revise antes de salvar.` : 'Nenhum item vazio para preencher.');
+}
+async function reviewAll() {
+  const items = [];
+  doc.screens.forEach((s, i) => s.marks.forEach((m, j) => { if (String(m.text || '').trim()) items.push({ id: `${i}_${j}`, text: m.text }); }));
+  if (!items.length) { toast('Não há textos para revisar.'); return; }
+  busy(true, `Revisando ${items.length} texto(s)…`);
+  const r = await api.aiTask('texts', { mode: 'review', items });
+  busy(false);
+  if (!r.ok) { toast(r.error, true); return; }
+  let changed = 0;
+  Object.entries(r.data).forEach(([id, t]) => {
+    const [i, j] = id.split('_').map(Number); const m = doc.screens[i] && doc.screens[i].marks[j];
+    if (m && t && t !== m.text) { m.text = t; changed++; }
+  });
+  if (changed) { commit(); renderAll(); }
+  toast(changed ? `${changed} texto(s) revisado(s). Use Desfazer (Ctrl+Z) para voltar.` : 'Os textos já estavam bons.');
+}
+async function suggestStructure() {
+  busy(true, 'Sugerindo nomes e capítulos…');
+  const r = await api.aiTask('structure', { title: doc.title, screens: doc.screens.map((s, i) => ({ n: i + 1, name: s.name, group: s.group, items: s.marks.map((m) => m.text).filter(Boolean) })) });
+  busy(false);
+  if (!r.ok) { toast(r.error, true); return; }
+  let changed = 0;
+  r.data.forEach((x) => {
+    const s = doc.screens[Number(x.n) - 1]; if (!s) return;
+    if (x.name && x.name !== s.name) { s.name = String(x.name).trim(); changed++; }
+    if (typeof x.group === 'string' && x.group.trim() !== (s.group || '')) { s.group = x.group.trim(); changed++; }
+  });
+  if (changed) { commit(); renderAll(); }
+  toast(changed ? 'Nomes e capítulos sugeridos. Use Desfazer (Ctrl+Z) se não gostar.' : 'Nada a mudar.');
+}
+$('#btnAi').onclick = (e) => { e.stopPropagation(); $('#aiPop').hidden = !$('#aiPop').hidden; };
+document.addEventListener('click', (e) => { if (!e.target.closest('#aiMenu')) $('#aiPop').hidden = true; });
+$$('#aiPop button').forEach((b) => {
+  b.onclick = () => {
+    $('#aiPop').hidden = true;
+    const a = b.dataset.ai;
+    if (a === 'fillScreen') fillScreens([sel]);
+    else if (a === 'fillAll') fillScreens(doc.screens.map((_, i) => i));
+    else if (a === 'review') reviewAll();
+    else if (a === 'structure') suggestStructure();
+  };
+});
+
 /* ---------------- salvar e exportar ---------------- */
 async function save() {
   renumber();
   $('#btnSave').disabled = true; $('#btnSave').textContent = 'Salvando…';
   try {
     // print final de cada tela = original + marcações
-    const pngs = doc.screens.map((s, i) => {
-      const img = images[i]; const c = document.createElement('canvas');
-      c.width = img.naturalWidth; c.height = img.naturalHeight;
-      const x = c.getContext('2d'); x.drawImage(img, 0, 0);
-      s.marks.forEach((m) => drawMark(x, m, scaleOf(i)));
-      return c.toDataURL('image/png');
-    });
+    const pngs = doc.screens.map((s, i) => markedCanvas(i).toDataURL('image/png'));
     const payload = JSON.parse(JSON.stringify(doc));
     payload.copyVideo = $('#optCopyVideo').checked;
     const r = await api.mdocSave(DIR, payload, pngs, replaced);
@@ -365,7 +465,9 @@ window.addEventListener('resize', () => { if (doc) { fitCanvas(); draw(); } });
   } catch { /* ignora */ }
   const r = await api.mdocLoad(DIR);
   if (!r.ok) { $('#loading').textContent = `Não foi possível abrir o manual: ${r.error}`; return; }
-  doc = r.doc; video = r.video;
+  doc = r.doc; video = r.video; screenVideos = r.screenVideos || {}; aiOn = !!r.ai;
+  $$('#aiPop button').forEach((b) => { b.disabled = !aiOn; });
+  $('#aiPopHint').textContent = aiOn ? 'As sugestões podem ser desfeitas com Ctrl+Z.' : 'Cadastre uma credencial de IA na aba IA do RecFlow.';
   images = await Promise.all(r.originals.map((u) => (u ? loadImg(u) : loadImg('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='))));
   replaced = doc.screens.map(() => null);
   $('#optLogo').disabled = !r.hasLogo; $('#optLogo').checked = r.hasLogo;

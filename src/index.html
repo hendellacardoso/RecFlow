@@ -63,6 +63,8 @@
       <button class="nav" data-panel="schedule">Agendamento</button>
       <button class="nav" data-panel="files">Arquivos</button>
       <button class="nav" data-panel="manual">Manual</button>
+      <button class="nav" data-panel="brand">Identidade visual</button>
+      <button class="nav" data-panel="ai">IA</button>
       <button class="nav" data-panel="about">Sobre</button>
       <div class="sidebar-foot" id="outputShort"></div>
     </aside>
@@ -70,6 +72,11 @@
     <main>
       <!-- INÍCIO -->
       <section class="panel active" id="panel-home">
+        <div class="card recover" id="recoverBox" hidden>
+          <div class="area-title">Gravação interrompida encontrada</div>
+          <p class="hint">O RecFlow foi fechado (ou o computador desligou) durante uma gravação. Dá para recuperar o que foi gravado até aquele momento.</p>
+          <div id="recoverList" class="list"></div>
+        </div>
         <div class="panel-head">
           <h2 id="targetTitle">Tela inteira</h2>
           <button id="btnRefresh" class="btn ghost">Atualizar</button>
@@ -141,6 +148,50 @@
           <label class="check"><input type="checkbox" data-key="minimizeOnRecord"> Minimizar ao iniciar a gravação</label>
           <label class="check"><input type="checkbox" data-key="openEditor"> Abrir o editor ao terminar a gravação</label>
         </div>
+        <h3>Motor de gravação</h3>
+        <div class="form">
+          <label>Gravar usando
+            <select data-key="engine">
+              <option value="browser">Padrão (recomendado)</option>
+              <option value="ffmpeg">FFmpeg com a placa de vídeo (mais leve em telas grandes)</option>
+            </select>
+          </label>
+          <label id="encLabel">Codificador
+            <select data-key="hwEncoder" id="hwEncoder"><option value="auto">Automático</option></select>
+          </label>
+          <label id="grabLabel">Captura
+            <select data-key="hwGrabber">
+              <option value="gdigrab">GDI (compatível com tudo)</option>
+              <option value="ddagrab">Desktop Duplication (mais rápida, experimental)</option>
+            </select>
+          </label>
+        </div>
+        <div class="engine-row" id="engineRow">
+          <button id="btnDetectEnc" class="btn small">Detectar placa de vídeo</button>
+          <span class="hint" id="encInfo"></span>
+        </div>
+        <p class="hint" id="engineHint">O modo FFmpeg funciona em Tela inteira e Área (Janela e Webcam usam o padrão). O som continua sendo gravado pelo RecFlow e é juntado ao vídeo no final.</p>
+
+        <h3>Limite por arquivo</h3>
+        <div class="form limit-form">
+          <label>Limite
+            <select data-key="limitMode">
+              <option value="off">Sem limite</option>
+              <option value="time">Por tempo</option>
+              <option value="size">Por tamanho</option>
+            </select>
+          </label>
+          <label id="limTime">Minutos <input type="number" min="1" max="1440" data-key="limitMinutes"></label>
+          <label id="limSize">Tamanho (MB) <input type="number" min="50" max="200000" step="50" data-key="limitMB"></label>
+          <label id="limAction">Ao atingir
+            <select data-key="limitAction">
+              <option value="split">Continuar num arquivo novo (parte 2, 3…)</option>
+              <option value="stop">Parar a gravação</option>
+            </select>
+          </label>
+        </div>
+        <p class="hint">O RecFlow também avisa quando o disco está ficando cheio e encerra a gravação com segurança antes que falte espaço.</p>
+
         <h3>Ao iniciar</h3>
         <div class="form">
           <label>Contagem regressiva
@@ -196,6 +247,12 @@
           <button id="btnChooseFolder" class="btn">Alterar</button>
           <button id="btnOpenFolder" class="btn ghost">Abrir</button>
         </div>
+        <h3>Configurações</h3>
+        <div class="folder">
+          <span class="hint grow-hint">Leve suas configurações (atalhos, áudio, manual, identidade visual…) para outro computador. As chaves de IA não são exportadas.</span>
+          <button id="btnSetExport" class="btn">Exportar…</button>
+          <button id="btnSetImport" class="btn ghost">Importar…</button>
+        </div>
       </section>
 
       <!-- ÁUDIO -->
@@ -243,6 +300,7 @@
           </div>
           <canvas class="meter test" id="testWave"></canvas>
         </div>
+        <label class="check"><input type="checkbox" data-key="separateTracks"> Gravar também o microfone e o som do sistema em trilhas separadas (para ajustar cada volume no editor)</label>
         <button id="btnDevices" class="btn ghost">Atualizar dispositivos</button>
       </section>
 
@@ -302,6 +360,7 @@
         <ul class="keys" id="drawKeys"></ul>
         <h3>Efeitos do mouse</h3>
         <label class="check"><input type="checkbox" data-key="clickEffects"> Mostrar efeito ao clicar (esquerdo amarelo, direito vermelho)</label>
+        <label class="check"><input type="checkbox" data-key="recordClicks"> Guardar a posição dos cliques para o editor sugerir zooms automáticos</label>
         <p class="hint warn" id="hookWarn" hidden>O módulo <code>uiohook-napi</code> não está instalado, então os efeitos de clique ficam desativados. Rode <code>npm install</code> novamente.</p>
         <h3>Teclas pressionadas</h3>
         <label class="check"><input type="checkbox" data-key="keysShow"> Mostrar no vídeo as teclas e atalhos usados durante a gravação</label>
@@ -422,11 +481,130 @@
           <h3>Manuais salvos</h3>
           <div>
             <button id="btnManRefresh" class="btn ghost small">Atualizar</button>
+            <button id="btnManMerge" class="btn small" title="Juntar vários manuais num só (cada um vira um capítulo)">Mesclar…</button>
             <button id="btnManOther" class="btn small">Abrir outro…</button>
           </div>
         </div>
         <label class="check"><input type="checkbox" id="manLogo"> Incluir o logo (da aba Vídeo) na capa do PDF e do Word</label>
         <div id="manList" class="list"></div>
+      </section>
+
+      <!-- IDENTIDADE VISUAL -->
+      <section class="panel" id="panel-brand">
+        <h2>Identidade visual</h2>
+        <p class="hint">Cores, logo e rodapé da sua empresa ou produto, aplicados nos manuais (HTML, PDF e Word) e nos cartões de abertura e encerramento do editor de vídeo.</p>
+        <div class="split brand-split">
+          <div>
+            <div class="form">
+              <label>Nome (empresa ou produto) <input type="text" id="brName" maxlength="80" placeholder="Ex.: API2Dev"></label>
+              <label>Site ou contato <input type="text" id="brSite" maxlength="120" placeholder="Ex.: https://api2dev.com.br"></label>
+            </div>
+            <div class="form">
+              <label>Cor principal <span class="color-row"><input type="color" id="brColor"><code id="brColorTxt"></code></span></label>
+              <label>Cor dos títulos <span class="color-row"><input type="color" id="brColor2"><code id="brColor2Txt"></code></span></label>
+            </div>
+            <label class="full">Rodapé <input type="text" id="brFooter" maxlength="160" placeholder="Ex.: © 2026 API2Dev · suporte@api2dev.com.br"></label>
+            <div class="area-title brand-logo-t">Logo</div>
+            <div class="wm-row">
+              <div class="wm-preview" id="brLogo"><span>Sem logo</span></div>
+              <div class="brand-logo-btns">
+                <button id="btnBrLogo" class="btn">Escolher imagem…</button>
+                <button id="btnBrLogoDel" class="btn ghost">Remover</button>
+                <button id="btnBrToWm" class="btn ghost" title="Coloca este logo como marca d'água das gravações (aba Vídeo)">Usar como logo das gravações</button>
+              </div>
+            </div>
+            <label class="check"><input type="checkbox" data-key="brandManuals"> Aplicar nos manuais (capa, cores, logo e rodapé)</label>
+          </div>
+          <div>
+            <div class="area-title">Prévia</div>
+            <div class="brand-preview" id="brPreview">
+              <div class="bp-cover"><img id="bpLogo" alt="" hidden><div class="bp-bar"></div><div class="bp-title">Manual do sistema</div><div class="bp-sub" id="bpName"></div></div>
+              <div class="bp-page"><span class="bp-tn">1</span><span class="bp-h">Cadastro</span><span class="bp-btn">▶ Ver no vídeo</span></div>
+              <div class="bp-foot" id="bpFoot">Gerado pelo RecFlow</div>
+            </div>
+            <div class="area-title bp-card-t">Cartão de abertura (editor)</div>
+            <canvas id="bpCard" class="bp-card" width="640" height="360"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- IA -->
+      <section class="panel" id="panel-ai">
+        <h2>Inteligência artificial</h2>
+        <p class="hint">Cadastre suas credenciais para a IA ajudar a escrever as descrições do manual, revisar e traduzir textos, gerar legendas, título e capítulos do vídeo e narrar trechos. As chaves ficam <b>criptografadas neste computador</b> e só são enviadas ao provedor escolhido.</p>
+        <p class="hint warn" id="aiEncWarn" hidden>A criptografia do sistema não está disponível: as chaves valem só até fechar o RecFlow.</p>
+        <div class="panel-head">
+          <h3>Credenciais</h3>
+          <button id="btnAiAdd" class="btn primary small">+ Adicionar credencial</button>
+        </div>
+        <div id="aiList" class="list"></div>
+
+        <div class="card ai-form" id="aiForm" hidden>
+          <div class="form">
+            <label>Nome <input type="text" id="aiName" maxlength="60" placeholder="Ex.: Claude da empresa"></label>
+            <label>Provedor <select id="aiProvider"></select></label>
+          </div>
+          <div class="form" id="aiRowBase">
+            <label class="full">URL base <input type="text" id="aiBase" placeholder="https://api.groq.com/openai/v1"></label>
+          </div>
+          <div class="form" id="aiRowKey">
+            <label class="full">Chave da API <input type="password" id="aiKey" autocomplete="off" spellcheck="false" placeholder="Cole a chave aqui"></label>
+          </div>
+          <div class="ai-keylink" id="aiKeyLink"></div>
+          <div class="form" id="aiRowModel">
+            <label>Modelo (textos e imagens)
+              <span class="inline"><input type="text" id="aiModel" list="aiModels" placeholder="Clique em Listar"><button id="btnAiModels" class="btn small" type="button">Listar</button></span>
+              <datalist id="aiModels"></datalist>
+            </label>
+            <label id="aiRowStt">Modelo de transcrição <input type="text" id="aiStt" placeholder="whisper-1"></label>
+          </div>
+          <div class="form" id="aiRowTts">
+            <label>Modelo de voz <input type="text" id="aiTtsModel" placeholder="tts-1"></label>
+            <label>Voz <input type="text" id="aiVoice" placeholder="alloy"></label>
+          </div>
+          <div id="aiRowHttp">
+            <div class="form"><label class="full">URL da API de voz <input type="text" id="aiHttpUrl" placeholder="https://sua-api/v1/tts"></label></div>
+            <div class="form">
+              <label>Cabeçalhos (um por linha)<textarea id="aiHttpHeaders" rows="3" spellcheck="false" placeholder="Authorization: Bearer {{key}}&#10;Content-Type: application/json"></textarea></label>
+              <label>Corpo (JSON)<textarea id="aiHttpBody" rows="3" spellcheck="false" placeholder='{"texto": "{{text}}", "voz": "{{voice}}"}'></textarea></label>
+            </div>
+            <div class="form">
+              <label>Resposta
+                <select id="aiHttpResp">
+                  <option value="audio">O próprio arquivo de áudio</option>
+                  <option value="json">JSON com o áudio (base64 ou link)</option>
+                </select>
+              </label>
+              <label>Campo do JSON <input type="text" id="aiHttpPath" placeholder="audio ou data.url"></label>
+            </div>
+            <p class="hint">Use <code>{{text}}</code> para o texto, <code>{{key}}</code> para a chave e <code>{{voice}}</code> para a voz.</p>
+          </div>
+          <div class="ai-form-btns">
+            <button id="btnAiCancel" class="btn ghost">Cancelar</button>
+            <button id="btnAiSave" class="btn primary">Salvar</button>
+          </div>
+        </div>
+
+        <h3>Usar em</h3>
+        <div class="form ai-use">
+          <label>Textos e imagens (manual, revisão, tradução, título) <select id="aiUseText"></select></label>
+          <label>Transcrição (legendas) <select id="aiUseStt"></select></label>
+          <label>Narração (voz) <select id="aiUseTts"></select></label>
+          <label>Idioma dos textos
+            <select id="aiLang">
+              <option value="pt-BR">Português (Brasil)</option>
+              <option value="en">Inglês</option>
+              <option value="es">Espanhol</option>
+            </select>
+          </label>
+        </div>
+        <h3>Onde a IA ajuda</h3>
+        <ul class="keys ai-feats">
+          <li><b>Manual</b> botão ✨ na marcação (Insert) sugere a descrição do campo olhando a tela</li>
+          <li><b>Editor de manual</b> preencher itens vazios, revisar textos, sugerir nomes de telas e capítulos</li>
+          <li><b>Manuais salvos</b> traduzir um manual inteiro (gera uma cópia)</li>
+          <li><b>Editor de vídeo</b> legendas automáticas, tradução das legendas, título/descrição/capítulos para YouTube e narração</li>
+        </ul>
       </section>
 
       <!-- SOBRE -->
@@ -462,8 +640,16 @@
     </main>
   </div>
 
+  <div class="dlg" id="dlg" hidden>
+    <div class="dlg-card">
+      <h2 id="dlgTitle"></h2>
+      <div id="dlgBody"></div>
+      <div class="dlg-actions" id="dlgActions"></div>
+    </div>
+  </div>
   <div id="toast" class="toast"></div>
   <script src="blur.js"></script>
+  <script src="brand.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

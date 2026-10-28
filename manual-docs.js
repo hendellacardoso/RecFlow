@@ -10,6 +10,14 @@ const { BrowserWindow, nativeImage } = require('electron');
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmtTime = (t) => { t = Math.max(0, Math.floor(t || 0)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return `${h ? `${h}:` : ''}${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`; };
 const hasTime = (t) => Number.isFinite(t);
+const urlOf = (p) => String(p || '').split(path.sep).join('/');
+
+// Identidade visual (cores, logo e rodapé) aplicada nos documentos
+let brand = { color: '', color2: '', name: '', footer: '', logoFile: '' };
+function setBrand(b) { brand = { color: '', color2: '', name: '', footer: '', logoFile: '', ...(b || {}) }; }
+const bc = () => (/^#[0-9a-f]{6}$/i.test(brand.color) ? brand.color : '#e5484d');
+const bc2 = () => (/^#[0-9a-f]{6}$/i.test(brand.color2) ? brand.color2 : '#111827');
+const footerText = () => brand.footer || 'Gerado pelo RecFlow';
 const fmtDate = (iso) => { try { return new Date(iso).toLocaleString('pt-BR', { dateStyle: 'long', timeStyle: 'short' }); } catch { return ''; } };
 
 /* ---------------- Leitura / normalização ---------------- */
@@ -23,6 +31,7 @@ function normalize(doc, dir) {
     original: s.original || path.join('originais', `tela_${String(i + 1).padStart(2, '0')}.png`),
     scale: s.scale || null,
     videoTime: Number.isFinite(s.videoTime) ? s.videoTime : null,
+    video: s.video || null,
     marks: (s.marks || []).map((m) => ({
       num: m.num, text: m.text || '', shape: m.shape || 'ellipse', color: m.color || '#ff3b30',
       rect: m.rect || { x: 0, y: 0, w: 10, h: 10 }, fieldName: m.fieldName || '',
@@ -80,7 +89,7 @@ function buildHtml(doc, { print = false, logo = null } = {}) {
   const sections = screens.map((s) => `
   <section class="tela" id="tela-${s.n}">
     ${s.group ? `<span class="cap">${esc(s.group)}</span>` : ''}
-    <h2><span class="tn">${s.n}</span>${esc(s.name)}${doc.video && hasTime(s.videoTime) ? (print
+    <h2><span class="tn">${s.n}</span>${esc(s.name)}${(s.video || doc.video) && hasTime(s.videoTime) ? (print
       ? `<span class="vt">Vídeo: ${fmtTime(s.videoTime)}</span>`
       : `<button class="vt" data-t="${s.videoTime}" title="Assistir a partir deste momento">▶ Ver no vídeo · ${fmtTime(s.videoTime)}</button>`) : ''}</h2>
     <figure><img src="${esc(s.file)}" alt="${esc(s.name)}"></figure>
@@ -96,13 +105,14 @@ function buildHtml(doc, { print = false, logo = null } = {}) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(doc.title)}</title>
 <style>
-  :root { --c: #e5484d; }
+  :root { --c: ${bc()}; --c2: ${bc2()}; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 16px/1.6 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: #1f2937; background: ${print ? '#fff' : '#f4f5f8'}; }
   .wrap { max-width: 1080px; margin: 0 auto; padding: ${print ? '0' : '32px 20px 60px'}; }
   .capa { background: #fff; border-radius: ${print ? '0' : '18px'}; padding: ${print ? '0' : '56px 48px'}; ${print ? '' : 'box-shadow: 0 8px 30px rgba(15,23,42,.08);'} margin-bottom: 28px; }
   .capa img.logo { max-height: 90px; max-width: 260px; margin-bottom: 28px; }
-  .capa h1 { font-size: ${print ? '40px' : '36px'}; line-height: 1.15; margin: 0 0 10px; letter-spacing: -.02em; color: #111827; }
+  .capa h1 { font-size: ${print ? '40px' : '36px'}; line-height: 1.15; margin: 0 0 10px; letter-spacing: -.02em; color: var(--c2); }
+  .capa .bar { width: 72px; height: 6px; border-radius: 3px; background: var(--c); margin-bottom: 18px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .capa .sub { font-size: 19px; color: #4b5563; margin: 0 0 22px; }
   .capa .meta { color: #6b7280; font-size: 14px; display: flex; gap: 18px; flex-wrap: wrap; }
   .sumario { background: #fff; border-radius: 18px; padding: ${print ? '0' : '28px 36px'}; ${print ? '' : 'box-shadow: 0 8px 30px rgba(15,23,42,.06);'} margin-bottom: 32px; }
@@ -118,7 +128,7 @@ function buildHtml(doc, { print = false, logo = null } = {}) {
   .cap { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #9ca3af; margin-bottom: 4px; }
   .tela { background: #fff; border-radius: 18px; padding: ${print ? '0' : '28px 32px 30px'}; ${print ? '' : 'box-shadow: 0 8px 30px rgba(15,23,42,.06);'} margin-bottom: 28px; }
   .tela h2 { display: flex; align-items: center; gap: 12px; font-size: 22px; margin: 0 0 16px; }
-  .tn { width: 34px; height: 34px; border-radius: 10px; background: #111827; color: #fff; display: grid; place-items: center; font-size: 15px; flex: none; }
+  .tn { width: 34px; height: 34px; border-radius: 10px; background: var(--c2); color: #fff; display: grid; place-items: center; font-size: 15px; flex: none; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   figure { margin: 0; }
   figure img { width: 100%; border: 1px solid #e5e7eb; border-radius: 10px; display: block; ${print ? '' : 'cursor: zoom-in; transition: box-shadow .2s;'} }
   ${print ? '' : 'figure img:hover { box-shadow: 0 10px 30px rgba(0,0,0,.12); }'}
@@ -160,9 +170,11 @@ function buildHtml(doc, { print = false, logo = null } = {}) {
 <div class="wrap">
   <header class="capa">
     ${logo ? `<img class="logo" src="${logo}" alt="">` : ''}
+    <div class="bar"></div>
     <h1>${esc(doc.title)}</h1>
     ${doc.subtitle ? `<p class="sub">${esc(doc.subtitle)}</p>` : ''}
     <div class="meta">
+      ${brand.name ? `<span>${esc(brand.name)}</span>` : ''}
       ${doc.author ? `<span>Autor: ${esc(doc.author)}</span>` : ''}
       <span>Atualizado em ${esc(when)}</span>
       <span>${screens.length} tela(s) · ${screens.reduce((t, s) => t + s.marks.length, 0)} item(ns)</span>
@@ -173,7 +185,7 @@ function buildHtml(doc, { print = false, logo = null } = {}) {
     : `<section class="video" id="video"><h2>Vídeo</h2><video id="mv" src="${esc(doc.video.split(path.sep).join('/'))}" controls preload="metadata"></video></section>`) : ''}
   ${screens.length > 1 ? `<nav class="sumario"><h2>Sumário</h2><ol>${toc}</ol></nav>` : ''}
   ${sections}
-  <footer>Gerado pelo RecFlow</footer>
+  <footer>${esc(footerText())}</footer>
 </div>
 ${print ? '' : `<div class="zoom" id="zoom"><img alt=""><span class="tip">Clique na imagem para ver no tamanho real · Esc fecha</span></div>
 <script>
@@ -237,13 +249,14 @@ function buildViewHtml(doc, { logo = null } = {}) {
   const sections = screens.map((s) => `
     <section class="tela" id="tela-${s.n}">
       ${s.group ? `<span class="cap">${esc(s.group)}</span>` : ''}
-      <h2><span class="tn">${s.n}</span><span class="tt">${esc(s.name)}</span>${doc.video && hasTime(s.videoTime) ? `<button class="vt" data-t="${s.videoTime}" title="Assistir a partir deste momento">▶ Ver no vídeo · ${fmtTime(s.videoTime)}</button>` : ''}</h2>
+      <h2><span class="tn">${s.n}</span><span class="tt">${esc(s.name)}</span>${(s.video || doc.video) && hasTime(s.videoTime) ? `<button class="vt" data-t="${s.videoTime}"${s.video ? ` data-v="${esc(urlOf(s.video))}"` : ''} title="Assistir a partir deste momento">▶ Ver no vídeo · ${fmtTime(s.videoTime)}</button>` : ''}</h2>
       <figure><img src="${esc(s.file)}" alt="${esc(s.name)}" loading="lazy"></figure>
       <ol class="itens">${s.marks.map((m) => `
         <li id="t${s.n}-i${m.num}"><span class="n" style="background:${esc(m.color)}">${m.num}</span><div><p>${esc(m.text || '(sem descrição)').replace(/\n/g, '<br>')}</p>${m.fieldName ? `<small>${esc(m.fieldName)}</small>` : ''}</div></li>`).join('')}
       </ol>
     </section>`).join('');
-  const videoSrc = doc.video ? esc(doc.video.split(path.sep).join('/')) : '';
+  const firstVideo = doc.video || (screens.find((s) => s.video) || {}).video || null;
+  const videoSrc = firstVideo ? esc(urlOf(firstVideo)) : '';
 
   return `<!doctype html>
 <html lang="pt-BR">
@@ -252,7 +265,7 @@ function buildViewHtml(doc, { logo = null } = {}) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(doc.title)}</title>
 <style>
-  :root { --c: #e5484d; --side: 320px; --line: #e5e7eb; --hl: #fff3a6; }
+  :root { --c: ${bc()}; --c2: ${bc2()}; --side: 320px; --line: #e5e7eb; --hl: #fff3a6; }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; scroll-padding-top: 16px; }
   body { margin: 0; font: 16px/1.6 "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: #1f2937; background: #f4f5f8; }
@@ -293,13 +306,14 @@ function buildViewHtml(doc, { logo = null } = {}) {
   .wrap { max-width: 1080px; margin: 0 auto; }
   .capa { background: #fff; border-radius: 18px; padding: 44px 44px 36px; box-shadow: 0 8px 30px rgba(15,23,42,.08); margin-bottom: 26px; }
   .capa img.logo { max-height: 80px; max-width: 240px; margin-bottom: 22px; }
-  .capa h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -.02em; color: #111827; }
+  .capa h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; letter-spacing: -.02em; color: var(--c2); }
+  .capa .bar { width: 64px; height: 5px; border-radius: 3px; background: var(--c); margin-bottom: 16px; }
   .capa .sub { font-size: 18px; color: #4b5563; margin: 0 0 18px; }
   .capa .meta { color: #6b7280; font-size: 14px; display: flex; gap: 18px; flex-wrap: wrap; }
   .tela, .video { background: #fff; border-radius: 18px; padding: 26px 30px 28px; box-shadow: 0 8px 30px rgba(15,23,42,.06); margin-bottom: 26px; }
   .cap { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #9ca3af; margin-bottom: 4px; }
   .tela h2, .video h2 { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 22px; margin: 0 0 16px; }
-  .tn { width: 34px; height: 34px; border-radius: 10px; background: #111827; color: #fff; display: grid; place-items: center; font-size: 15px; flex: none; }
+  .tn { width: 34px; height: 34px; border-radius: 10px; background: var(--c2); color: #fff; display: grid; place-items: center; font-size: 15px; flex: none; }
   .vt { margin-left: auto; font: 600 13px "Segoe UI", system-ui, sans-serif; color: #fff; background: var(--c); border: 0; border-radius: 99px; padding: 6px 12px; cursor: pointer; }
   figure { margin: 0; }
   figure img { width: 100%; border: 1px solid var(--line); border-radius: 10px; display: block; cursor: zoom-in; transition: box-shadow .2s; }
@@ -351,7 +365,7 @@ function buildViewHtml(doc, { logo = null } = {}) {
   <nav class="tree" id="tree">
     <ul>
       <li class="top" data-target="capa"><a href="#capa">${ICON.manual}<span class="lbl">Início</span></a></li>
-      ${doc.video ? `<li class="top" data-target="video"><a href="#video">${ICON.video}<span class="lbl">Vídeo</span></a></li>` : ''}
+      ${firstVideo ? `<li class="top" data-target="video"><a href="#video">${ICON.video}<span class="lbl">Vídeo</span></a></li>` : ''}
       ${tree}
     </ul>
   </nav>
@@ -361,16 +375,18 @@ function buildViewHtml(doc, { logo = null } = {}) {
   <div class="wrap">
     <header class="capa" id="capa">
       ${logo ? `<img class="logo" src="${logo}" alt="">` : ''}
+      <div class="bar"></div>
       <h1>${esc(doc.title)}</h1>
       ${doc.subtitle ? `<p class="sub">${esc(doc.subtitle)}</p>` : ''}
       <div class="meta">
+        ${brand.name ? `<span>${esc(brand.name)}</span>` : ''}
         ${doc.author ? `<span>Autor: ${esc(doc.author)}</span>` : ''}
         <span>Atualizado em ${esc(when)}</span>
       </div>
     </header>
-    ${doc.video ? `<section class="video" id="video"><button class="close-mini" id="closeMini" title="Fechar">✕</button><h2>Vídeo</h2><video id="mv" src="${videoSrc}" controls preload="metadata"></video></section>` : ''}
+    ${firstVideo ? `<section class="video" id="video"><button class="close-mini" id="closeMini" title="Fechar">✕</button><h2>Vídeo</h2><video id="mv" src="${videoSrc}" controls preload="metadata"></video></section>` : ''}
     ${sections}
-    <footer>Gerado pelo RecFlow</footer>
+    <footer>${esc(footerText())}</footer>
   </div>
 </main>
 <div class="zoom" id="zoom"><img alt=""><span class="tip">Clique na imagem para ver no tamanho real · Esc fecha</span></div>
@@ -442,7 +458,7 @@ function buildViewHtml(doc, { logo = null } = {}) {
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') z.classList.remove('on', 'full'); });
   // vídeo
   var mv = $('#mv'), vs = $('#video');
-  $$('.vt[data-t]').forEach(function (b) { b.addEventListener('click', function () { if (!mv) return; vs.classList.add('mini'); mv.currentTime = parseFloat(b.dataset.t) || 0; mv.play(); }); });
+  $$('.vt[data-t]').forEach(function (b) { b.addEventListener('click', function () { if (!mv) return; if (b.dataset.v && mv.getAttribute('src') !== b.dataset.v) mv.setAttribute('src', b.dataset.v); vs.classList.add('mini'); mv.currentTime = parseFloat(b.dataset.t) || 0; mv.play(); }); });
   if (vs) {
     $('#closeMini').onclick = function () { mv.pause(); vs.classList.remove('mini'); };
     var spot = document.createElement('div'); vs.parentNode.insertBefore(spot, vs);
@@ -474,7 +490,15 @@ function writeDocs(dir, doc) {
   const clean = { ...doc }; delete clean.dir;
   fs.writeFileSync(path.join(dir, 'manual.json'), JSON.stringify(clean, null, 2));
   fs.writeFileSync(path.join(dir, 'descricoes.txt'), buildTxt(doc), 'utf8');
-  fs.writeFileSync(path.join(dir, 'manual.html'), buildHtml(doc));
+  // logo da identidade visual: copiado para a pasta (o HTML continua funcionando fora do PC)
+  let logo = null;
+  try {
+    if (brand.logoFile && fs.existsSync(brand.logoFile)) {
+      const img = nativeImage.createFromPath(brand.logoFile);
+      if (!img.isEmpty()) { fs.writeFileSync(path.join(dir, 'logo.png'), img.toPNG()); logo = 'logo.png'; }
+    }
+  } catch { logo = null; }
+  fs.writeFileSync(path.join(dir, 'manual.html'), buildHtml(doc, { logo }));
 }
 
 /* ---------------- PDF ---------------- */
@@ -486,7 +510,7 @@ async function exportPdf(dir, doc, out, { logo = null } = {}) {
     await w.loadFile(tmp);
     await w.webContents.executeJavaScript(`Promise.race([Promise.all([...document.images].map((i) => { i.loading = 'eager'; return i.decode().catch(() => {}); })), new Promise((r) => setTimeout(r, 15000))])`);
     const footer = `<div style="font-size:8.5px;width:100%;padding:0 14mm;color:#9ca3af;display:flex;justify-content:space-between;font-family:Segoe UI,Arial,sans-serif">
-      <span>${esc(doc.title)}</span><span><span class="pageNumber"></span> / <span class="totalPages"></span></span></div>`;
+      <span>${esc(doc.title)}${brand.footer ? ` · ${esc(brand.footer)}` : ''}</span><span><span class="pageNumber"></span> / <span class="totalPages"></span></span></div>`;
     const pdf = await w.webContents.printToPDF({
       pageSize: 'A4', printBackground: true, preferCSSPageSize: true,
       displayHeaderFooter: true, headerTemplate: '<div></div>', footerTemplate: footer
@@ -518,8 +542,9 @@ async function exportDocx(dir, doc, out, { logo = null } = {}) {
       children.push(new Paragraph({ spacing: { before: 1800, after: 400 }, children: [new ImageRun({ type: 'png', data: img.toPNG(), transformation: { width: Math.round(s.width * k), height: Math.round(s.height * k) } })] }));
     }
   }
-  children.push(new Paragraph({ heading: HeadingLevel.TITLE, spacing: { before: logo ? 0 : 3000, after: 200 }, children: [new TextRun({ text: doc.title, bold: true, size: 64 })] }));
+  children.push(new Paragraph({ heading: HeadingLevel.TITLE, spacing: { before: logo ? 0 : 3000, after: 200 }, children: [new TextRun({ text: doc.title, bold: true, size: 64, color: bc2().slice(1) })] }));
   if (doc.subtitle) children.push(new Paragraph({ spacing: { after: 400 }, children: [new TextRun({ text: doc.subtitle, size: 32, color: '4B5563' })] }));
+  if (brand.name) children.push(new Paragraph({ children: [new TextRun({ text: brand.name, bold: true, color: bc().slice(1) })] }));
   if (doc.author) children.push(new Paragraph({ children: [new TextRun({ text: `Autor: ${doc.author}`, color: '6B7280' })] }));
   children.push(new Paragraph({ children: [new TextRun({ text: `Atualizado em ${fmtDate(doc.updatedAt || doc.startedAt)}`, color: '6B7280' })] }));
   if (doc.video) children.push(new Paragraph({ spacing: { before: 200 }, children: [new TextRun({ text: `Vídeo: ${path.basename(doc.video)} (abra o manual.html para assistir)`, color: '6B7280' })] }));
@@ -546,9 +571,9 @@ async function exportDocx(dir, doc, out, { logo = null } = {}) {
     if (s.group) children.push(new Paragraph({ pageBreakBefore: i > 0, spacing: { after: 0 }, children: [new TextRun({ text: s.group.toUpperCase(), color: '9CA3AF', size: 18 })] }));
     children.push(new Paragraph({
       heading: HeadingLevel.HEADING_1, pageBreakBefore: i > 0 && !s.group,
-      children: [new Bookmark({ id: `tela_${s.n}`, children: [new TextRun(`${s.n}. ${s.name}`)] })]
+      children: [new Bookmark({ id: `tela_${s.n}`, children: [new TextRun({ text: `${s.n}. ${s.name}`, color: bc2().slice(1) })] })]
     }));
-    if (doc.video && hasTime(s.videoTime)) children.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: `Momento no vídeo: ${fmtTime(s.videoTime)}`, color: '6B7280', size: 20 })] }));
+    if ((s.video || doc.video) && hasTime(s.videoTime)) children.push(new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text: `Momento no vídeo: ${fmtTime(s.videoTime)}`, color: '6B7280', size: 20 })] }));
     const f = path.join(dir, s.file);
     if (fs.existsSync(f)) {
       const img = nativeImage.createFromPath(f); const sz = img.getSize();
@@ -572,7 +597,7 @@ async function exportDocx(dir, doc, out, { logo = null } = {}) {
         default: new Footer({
           children: [new Paragraph({
             alignment: AlignmentType.RIGHT,
-            children: [new TextRun({ text: `${doc.title}   ·   `, color: '9CA3AF', size: 16 }), new TextRun({ children: [PageNumber.CURRENT], color: '9CA3AF', size: 16 })]
+            children: [new TextRun({ text: `${doc.title}${brand.footer ? `   ·   ${brand.footer}` : ''}   ·   `, color: '9CA3AF', size: 16 }), new TextRun({ children: [PageNumber.CURRENT], color: '9CA3AF', size: 16 })]
           })]
         })
       },
@@ -583,4 +608,58 @@ async function exportDocx(dir, doc, out, { logo = null } = {}) {
   return out;
 }
 
-module.exports = { fmtTime, normalize, loadManual, listManuals, buildHtml, buildTxt, writeDocs, exportPdf, exportDocx };
+/* ---------------- Mesclar e copiar manuais ---------------- */
+const pad2 = (n) => String(n).padStart(2, '0');
+function uniqueDir(root, base) {
+  let d = path.join(root, base), i = 2;
+  while (fs.existsSync(d)) d = path.join(root, `${base}_${i++}`);
+  return d;
+}
+function stampNow() {
+  const d = new Date(); const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}`;
+}
+/**
+ * Junta vários manuais num só. Cada manual vira um capítulo (ou mantém os capítulos dele).
+ * Os prints são copiados; os vídeos continuam onde estão (cada tela aponta para o seu).
+ */
+function mergeManuals(root, dirs, { title = 'Manual completo', chapters = 'manual', subtitle = '', author = '' } = {}) {
+  if (!dirs || dirs.length < 2) throw new Error('Escolha pelo menos dois manuais.');
+  const dest = uniqueDir(root, `Manual_mesclado_${stampNow()}`);
+  fs.mkdirSync(path.join(dest, 'originais'), { recursive: true });
+  const screens = [];
+  dirs.forEach((dir) => {
+    const src = loadManual(dir);
+    src.screens.forEach((s) => {
+      const n = screens.length + 1;
+      const file = `tela_${pad2(n)}.png`;
+      const from = path.join(dir, s.file);
+      const orig = path.join(dir, s.original);
+      if (fs.existsSync(from)) fs.copyFileSync(from, path.join(dest, file));
+      fs.copyFileSync(fs.existsSync(orig) ? orig : from, path.join(dest, 'originais', file));
+      const vAbs = s.video || src.video ? path.resolve(dir, s.video || src.video) : null;
+      screens.push({
+        ...s, n, file, original: path.join('originais', file),
+        group: chapters === 'keep' ? (s.group || src.title) : src.title,
+        video: vAbs && fs.existsSync(vAbs) ? path.relative(dest, vAbs) : null,
+        videoTime: vAbs && fs.existsSync(vAbs) ? s.videoTime : null
+      });
+    });
+  });
+  const doc = normalize({ title, subtitle, author, numbering: 'screen', startedAt: new Date().toISOString(), video: null, screens }, dest);
+  writeDocs(dest, doc);
+  return dest;
+}
+// Cópia do manual (ex.: versão traduzida). O vídeo não é duplicado.
+function copyManual(dir, suffix) {
+  const src = loadManual(dir);
+  const dest = uniqueDir(path.dirname(dir), `${path.basename(dir)}_${suffix}`);
+  const skip = src.video && !src.video.includes('..') && !path.isAbsolute(src.video) ? path.resolve(dir, src.video) : null;
+  fs.cpSync(dir, dest, { recursive: true, filter: (f) => !skip || path.resolve(f) !== skip });
+  const doc = loadManual(dest);
+  if (src.video) doc.video = path.relative(dest, path.resolve(dir, src.video));
+  doc.screens.forEach((s) => { if (s.video) s.video = path.relative(dest, path.resolve(dir, s.video)); });
+  return { dir: dest, doc };
+}
+
+module.exports = { fmtTime, normalize, loadManual, listManuals, buildHtml, buildTxt, writeDocs, exportPdf, exportDocx, setBrand, mergeManuals, copyManual };
