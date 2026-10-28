@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>GT Manual</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #000; user-select: none; font: 14px "Segoe UI", system-ui, sans-serif; }
+    canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+    #stage { cursor: crosshair; }
+    #stage.over-mark { cursor: move; }
+    #stage.over-handle { cursor: nwse-resize; }
+    /* moldura indicando que a tela está congelada */
+    .frozen { position: fixed; inset: 0; border: 3px solid var(--c, #ff3b30); pointer-events: none; box-sizing: border-box; }
+    .banner {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px;
+      background: rgba(17, 20, 28, .92); color: #fff; padding: 8px 16px; border-radius: 99px; font-size: 13px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, .35); pointer-events: none; white-space: nowrap;
+    }
+    .banner b { color: #fff; }
+    .banner .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--c, #ff3b30); }
+    .banner span { color: #aab2c5; }
+    .dialog {
+      position: fixed; width: 400px; background: #fff; color: #1f2937; border-radius: 14px; padding: 14px 16px 12px;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, .45), 0 0 0 1px rgba(0, 0, 0, .06); user-select: text;
+    }
+    .dialog[hidden] { display: none; }
+    .d-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .d-num {
+      width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px;
+      background: var(--c, #ff3b30); box-shadow: 0 0 0 2px #fff, 0 1px 5px rgba(0, 0, 0, .35); flex: none;
+    }
+    .d-title { font-weight: 650; font-size: 15px; }
+    .d-field { color: #6b7280; font-size: 12.5px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+    .name-row { display: grid; gap: 4px; margin-bottom: 8px; }
+    .name-row[hidden] { display: none; }
+    .name-row label { font-size: 12px; color: #6b7280; font-weight: 600; }
+    .name-row input { border: 1px solid #d1d5db; border-radius: 9px; padding: 7px 10px; font: 14px "Segoe UI", system-ui, sans-serif; outline: none; }
+    .name-row input:focus { border-color: var(--c, #ff3b30); }
+    textarea {
+      width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical; border: 1px solid #d1d5db; border-radius: 9px;
+      padding: 9px 11px; font: 14.5px/1.45 "Segoe UI", system-ui, sans-serif; color: #111827; outline: none;
+    }
+    textarea:focus { border-color: var(--c, #ff3b30); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c, #ff3b30) 20%, transparent); }
+    .d-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+    .shapes { display: flex; gap: 4px; background: #f3f4f6; padding: 3px; border-radius: 9px; }
+    .shapes button { border: 0; background: transparent; width: 34px; height: 28px; border-radius: 7px; cursor: pointer; display: grid; place-items: center; color: #4b5563; }
+    .shapes button.on { background: #fff; color: var(--c, #ff3b30); box-shadow: 0 1px 3px rgba(0, 0, 0, .15); }
+    .shapes svg { width: 20px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; }
+    .btns { display: flex; gap: 6px; }
+    .btn { border: 1px solid #d1d5db; background: #fff; color: #374151; border-radius: 9px; padding: 7px 14px; font: 600 13.5px "Segoe UI", sans-serif; cursor: pointer; }
+    .btn.ok { background: var(--c, #ff3b30); border-color: var(--c, #ff3b30); color: #fff; }
+    .btn:hover { filter: brightness(.97); }
+    .hint { color: #9ca3af; font-size: 11.5px; margin-top: 8px; }
+    .drawhint {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(17, 20, 28, .9); color: #fff;
+      padding: 14px 20px; border-radius: 12px; font-size: 15px; pointer-events: none; text-align: center; line-height: 1.5;
+    }
+    .drawhint span { color: #aab2c5; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div class="frozen"></div>
+  <div class="banner"><span class="dot"></span><b>Modo manual</b><span id="bannerText">Tela 1 · item 1</span><span>· Esc cancela</span></div>
+  <div class="drawhint" id="drawHint" hidden>Não identifiquei o campo automaticamente.<br><span>Arraste sobre o componente para marcá-lo.</span></div>
+
+  <div class="dialog" id="dialog" hidden>
+    <div class="d-head">
+      <div class="d-num" id="dNum">1</div>
+      <div>
+        <div class="d-title" id="dTitle">Item 1 · Tela 1</div>
+        <div class="d-field" id="dField"></div>
+      </div>
+    </div>
+    <div class="name-row" id="nameRow" hidden>
+      <label for="screenName">Nome desta tela</label>
+      <input id="screenName" type="text" maxlength="80" placeholder="Ex.: Cadastro de declaração">
+    </div>
+    <textarea id="text" placeholder="Explique o que deve ser preenchido ou feito neste campo…"></textarea>
+    <div class="d-row">
+      <div class="shapes" id="shapes" title="Formato da marcação">
+        <button data-shape="ellipse" title="Elipse"><svg viewBox="0 0 24 16"><ellipse cx="12" cy="8" rx="10" ry="6"/></svg></button>
+        <button data-shape="roundrect" title="Retângulo arredondado"><svg viewBox="0 0 24 16"><rect x="2" y="2" width="20" height="12" rx="4"/></svg></button>
+        <button data-shape="rect" title="Retângulo"><svg viewBox="0 0 24 16"><rect x="2" y="2" width="20" height="12"/></svg></button>
+      </div>
+      <div class="btns">
+        <button class="btn" id="cancel">Cancelar</button>
+        <button class="btn ok" id="ok">OK</button>
+      </div>
+    </div>
+    <div class="hint">Enter confirma · Shift+Enter quebra a linha · arraste a marcação para ajustar</div>
+  </div>
+  <script src="marks.js"></script>
+  <script src="manual.js"></script>
+</body>
+</html>

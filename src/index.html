@@ -62,6 +62,7 @@
       <button class="nav" data-panel="hotkeys">Atalhos</button>
       <button class="nav" data-panel="schedule">Agendamento</button>
       <button class="nav" data-panel="files">Arquivos</button>
+      <button class="nav" data-panel="manual">Manual</button>
       <button class="nav" data-panel="about">Sobre</button>
       <div class="sidebar-foot" id="outputShort"></div>
     </aside>
@@ -354,6 +355,78 @@
           <button id="btnAddSched" class="btn primary">Agendar</button>
         </div>
         <div id="schedList" class="list"></div>
+      </section>
+
+      <!-- MANUAL -->
+      <section class="panel" id="panel-manual">
+        <h2>Marcações para manual</h2>
+        <p class="hint">Enquanto grava (ou mesmo sem gravar), aperte <b>Insert</b> com o cursor no campo que quer explicar: o RecFlow pausa a gravação, tira um print, contorna o campo, numera e pede a explicação. Ao confirmar, a gravação continua.</p>
+        <div class="card">
+          <label class="check big"><input type="checkbox" data-key="manualEnabled"> Ativar as marcações para manual</label>
+          <div class="man-keys">
+            <div><kbd id="mkMark">Insert</kbd> marca o campo em foco na tela atual</div>
+            <div><kbd id="mkNew">Shift+Insert</kbd> começa uma tela nova (novo print)</div>
+          </div>
+          <p class="hint">Os atalhos podem ser trocados na aba Atalhos. Se o campo não for identificado, é só arrastar sobre ele para marcar.</p>
+        </div>
+
+        <h3>Título do manual</h3>
+        <div class="form man-title">
+          <label>Título usado no próximo manual (e no atual, se houver)
+            <input type="text" id="manTitle" maxlength="120" placeholder="Ex.: Manual do módulo Declaração de IR">
+          </label>
+        </div>
+        <p class="hint">O nome de cada tela é pedido no primeiro item dela. Tudo pode ser ajustado depois no editor de manual.</p>
+
+        <h3>Aparência da marcação</h3>
+        <div class="man-look">
+          <div class="man-shapes" id="manShapes">
+            <button data-shape="ellipse"><svg viewBox="0 0 64 40"><ellipse cx="30" cy="22" rx="26" ry="13"/><circle cx="48" cy="12" r="7"/></svg><span>Elipse</span></button>
+            <button data-shape="roundrect"><svg viewBox="0 0 64 40"><rect x="6" y="11" width="48" height="22" rx="7"/><circle cx="54" cy="11" r="7"/></svg><span>Arredondado</span></button>
+            <button data-shape="rect"><svg viewBox="0 0 64 40"><rect x="6" y="11" width="48" height="22"/><circle cx="54" cy="11" r="7"/></svg><span>Retângulo</span></button>
+          </div>
+          <div class="form man-form">
+            <label>Cor
+              <span class="man-colors" id="manColors"></span>
+            </label>
+            <label>Numeração
+              <select data-key="manualNumbering">
+                <option value="screen">Recomeça em cada tela (1, 2, 3…)</option>
+                <option value="continuous">Contínua entre as telas</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" data-key="manualPause"> Pausar a gravação enquanto escrevo a explicação</label>
+
+        <h3>Arquivos gerados</h3>
+        <p class="hint">Cada gravação gera uma pasta com <b>tela_01.png</b>, <b>tela_02.png</b>… (prints com as marcações), <b>descricoes.txt</b> (número e explicação), <b>manual.html</b> (manual pronto para abrir ou imprimir) e a pasta <b>originais</b> com os prints sem marcação.</p>
+        <div class="folder">
+          <code id="manualDir"></code>
+          <button id="btnManDir" class="btn">Alterar</button>
+          <button id="btnManFolder" class="btn ghost">Abrir</button>
+        </div>
+        <div class="card man-session" id="manSession">
+          <div>
+            <div class="area-title">Sessão atual</div>
+            <div class="hint" id="manSessionText">Nenhuma marcação ainda.</div>
+          </div>
+          <div class="man-session-btns">
+            <button id="btnManHtml" class="btn">Abrir manual</button>
+            <button id="btnManSessFolder" class="btn ghost">Pasta</button>
+            <button id="btnManEnd" class="btn ghost" title="Os próximos Insert criam um manual novo">Encerrar</button>
+          </div>
+        </div>
+
+        <div class="panel-head man-list-head">
+          <h3>Manuais salvos</h3>
+          <div>
+            <button id="btnManRefresh" class="btn ghost small">Atualizar</button>
+            <button id="btnManOther" class="btn small">Abrir outro…</button>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" id="manLogo"> Incluir o logo (da aba Vídeo) na capa do PDF e do Word</label>
+        <div id="manList" class="list"></div>
       </section>
 
       <!-- SOBRE -->

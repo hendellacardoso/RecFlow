@@ -74,6 +74,30 @@ contextBridge.exposeInMainWorld('api', {
   wmChoose: () => invoke('wm:choose'),
   wmRead: () => invoke('wm:read'),
 
+  // modo manual
+  manualInit: () => invoke('manual:init'),
+  manualSave: (data) => invoke('manual:save', data),
+  manualClose: () => send('manual:close'),
+  manualStatus: () => invoke('manual:status'),
+  manualEnd: () => invoke('manual:end'),
+  manualOpenFolder: (which) => invoke('manual:openFolder', which),
+  manualOpenHtml: () => invoke('manual:openHtml'),
+  manualChooseDir: () => invoke('manual:chooseDir'),
+  manualSetTitle: (t) => invoke('manual:setTitle', t),
+  // manuais salvos e editor de manual
+  mdocList: () => invoke('mdoc:list'),
+  mdocEdit: (dir) => invoke('mdoc:edit', dir),
+  mdocOpenOther: () => invoke('mdoc:openOther'),
+  mdocLoad: (dir) => invoke('mdoc:load', dir),
+  mdocSave: (dir, doc, pngs, originals) => invoke('mdoc:save', dir, doc, pngs, originals),
+  mdocPickImage: () => invoke('mdoc:pickImage'),
+  mdocPickVideo: (dir) => invoke('mdoc:pickVideo', dir),
+  mdocExport: (dir, kind, opts) => invoke('mdoc:export', dir, kind, opts),
+  mdocOpenHtml: (dir) => invoke('mdoc:openHtml', dir),
+  mdocOpenFolder: (dir) => invoke('mdoc:openFolder', dir),
+  mdocOpenFile: (f) => invoke('mdoc:openFile', f),
+  mdocHasLogo: () => invoke('mdoc:hasLogo'),
+
   // eventos vindos do processo principal
   on: (channel, fn) => {
     const h = (_e, ...args) => fn(...args);

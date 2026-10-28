@@ -17,9 +17,12 @@ const HOTKEY_LABEL = {
   screenshot: 'Capturar imagem',
   draw: 'Ativar / desativar desenho',
   clear: 'Limpar desenhos',
-  webcam: 'Mostrar / ocultar webcam'
+  webcam: 'Mostrar / ocultar webcam',
+  manualMark: 'Manual: marcar campo',
+  manualNewScreen: 'Manual: nova tela'
 };
-const DEFAULT_HOTKEYS = { record: 'F12', pause: 'Shift+F12', screenshot: 'F11', draw: 'Ctrl+Shift+D', clear: 'Ctrl+Shift+X', webcam: 'Ctrl+Shift+W' };
+const DEFAULT_HOTKEYS = { record: 'F12', pause: 'Shift+F12', screenshot: 'F11', draw: 'Ctrl+Shift+D', clear: 'Ctrl+Shift+X', webcam: 'Ctrl+Shift+W', manualMark: 'Insert', manualNewScreen: 'Shift+Insert' };
+const MANUAL_COLORS = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#0a84ff', '#af52de', '#111111'];
 
 /* ------------------------------------------------------------------ */
 /* Utilidades                                                           */
@@ -91,6 +94,9 @@ async function init() {
   setInterval(tick, 250);
 
   api.on('hotkey', (k) => { if (k === 'record') toggleRecord(); else if (k === 'pause') togglePause(); });
+  // modo manual: pausa/retoma sem inverter o estado por engano
+  api.on('set-paused', (p) => { if (state.recording && !!p !== state.paused) togglePause(); });
+  api.on('manual:status', (st) => { renderManualStatus(st); if ($('#panel-manual').classList.contains('active')) refreshManuals(); });
   api.on('rec:force-stop', () => stopRecording());
   api.on('schedule:start', async ({ stopAt }) => {
     if (state.recording) return;
@@ -118,6 +124,7 @@ function renderAll() {
   $('#outputDir').textContent = S.outputDir;
   $('#outputShort').textContent = S.outputDir;
   refreshWatermark();
+  renderManual();
   updateUI();
 }
 
@@ -186,6 +193,16 @@ function bindUi() {
   $('#btnTestRec').onclick = testRecord;
   $$('[data-link]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); api.openExternal(a.dataset.link); }; });
   $('#btnWm').onclick = chooseWatermark;
+  $$('#manShapes button').forEach((b) => { b.onclick = () => { S.manualShape = b.dataset.shape; save({ manualShape: S.manualShape }); renderManual(); }; });
+  $('#btnManDir').onclick = async () => { const d = await api.manualChooseDir(); if (d) { S.manualDir = d; renderManual(); } };
+  $('#btnManFolder').onclick = () => api.manualOpenFolder('root');
+  $('#btnManSessFolder').onclick = () => api.manualOpenFolder('session');
+  $('#btnManHtml').onclick = () => api.manualOpenHtml();
+  $('#btnManEnd').onclick = async () => { renderManualStatus(await api.manualEnd()); refreshManuals(); };
+  $('#manTitle').addEventListener('change', async (e) => { S.manualTitle = await api.manualSetTitle(e.target.value); });
+  $('#btnManRefresh').onclick = refreshManuals;
+  $('#btnManOther').onclick = () => api.mdocOpenOther();
+  $('#manLogo').onchange = (e) => { manualLogo = e.target.checked; };
   $('#btnOpenProject').onclick = () => api.projectOpen();
   $('#btnTestPlay').onclick = testPlay;
   $('#testWave').onclick = (e) => {
@@ -214,6 +231,7 @@ function showPanel(id) {
   $$('.panel').forEach((p) => p.classList.toggle('active', p.id === `panel-${id}`));
   if (id === 'home') refreshSources();
   if (id === 'files') refreshFiles();
+  if (id === 'manual') renderManual();
   if (id === 'audio' || id === 'webcam') loadDevices();
   if (id === 'audio') startMonitor(); else if (!testing) stopMonitor();
 }
@@ -822,6 +840,67 @@ async function refreshFiles() {
     row.ondblclick = () => (isProj ? api.projectOpen(f.path) : api.openFile(f.path));
     list.appendChild(row);
   });
+}
+
+/* Modo manual */
+function renderManual() {
+  const color = S.manualColor || '#ff3b30';
+  $('#panel-manual').style.setProperty('--mc', color);
+  $$('#manShapes button').forEach((b) => b.classList.toggle('on', b.dataset.shape === (S.manualShape || 'ellipse')));
+  const box = $('#manColors'); box.innerHTML = '';
+  MANUAL_COLORS.forEach((c) => {
+    const b = el('button'); b.style.background = c; b.title = c; b.classList.toggle('on', c.toLowerCase() === color.toLowerCase());
+    b.onclick = () => { S.manualColor = c; save({ manualColor: c }); renderManual(); };
+    box.appendChild(b);
+  });
+  const custom = el('input'); custom.type = 'color'; custom.value = color; custom.title = 'Outra cor';
+  custom.onchange = () => { S.manualColor = custom.value; save({ manualColor: custom.value }); renderManual(); };
+  box.appendChild(custom);
+  const hk = S.hotkeys || {};
+  $('#mkMark').textContent = hk.manualMark || '—';
+  $('#mkNew').textContent = hk.manualNewScreen || '—';
+  $('#manualDir').textContent = S.manualDir || `${S.outputDir}\\Manuais`;
+  if (document.activeElement !== $('#manTitle')) $('#manTitle').value = S.manualTitle || 'Manual';
+  api.manualStatus().then(renderManualStatus);
+  api.mdocHasLogo().then((has) => {
+    $('#manLogo').disabled = !has; if (!has) $('#manLogo').checked = false; else $('#manLogo').checked = manualLogo;
+    $('#manLogo').parentElement.title = has ? '' : 'Escolha um logo na aba Vídeo para usar esta opção';
+  });
+  refreshManuals();
+}
+
+let manualLogo = true;
+async function refreshManuals() {
+  const list = $('#manList'); if (!list) return;
+  const items = await api.mdocList();
+  list.innerHTML = '';
+  if (!items.length) { list.appendChild(el('div', 'empty', 'Nenhum manual salvo ainda.')); return; }
+  items.slice(0, 30).forEach((m) => {
+    const row = el('div', 'row');
+    const info = el('div', 'grow');
+    info.append(el('div', 'title', m.title), el('div', 'meta', `${m.screens} tela(s) · ${m.items} item(ns) · ${new Date(m.updatedAt).toLocaleString('pt-BR')} · ${m.folder}`));
+    const b = (label, cls, fn) => { const x = el('button', `btn small ${cls}`, label); x.onclick = fn; return x; };
+    const exp = async (kind) => {
+      const r = await api.mdocExport(m.dir, kind, { logo: manualLogo && !$('#manLogo').disabled });
+      if (r.ok) { toast(`${kind === 'pdf' ? 'PDF' : 'Word'} salvo: ${r.file.split(/[\\/]/).pop()}`); api.mdocOpenFile(r.file); }
+      else if (!r.canceled) toast(`Não foi possível exportar: ${r.error}`, true);
+    };
+    row.append(el('div', 'ftype man', 'DOC'), info,
+      b('Editar', 'primary', () => api.mdocEdit(m.dir)),
+      b('HTML', '', () => api.mdocOpenHtml(m.dir)),
+      b('PDF', '', () => exp('pdf')),
+      b('Word', '', () => exp('docx')),
+      b('Pasta', 'ghost', () => api.mdocOpenFolder(m.dir)));
+    list.appendChild(row);
+  });
+}
+function renderManualStatus(st) {
+  if (!st) return;
+  const has = st.active && st.items > 0;
+  $('#manSessionText').textContent = has
+    ? `${st.items} item(ns) em ${st.screens} tela(s) · ${st.dir.split(/[\\/]/).pop()}`
+    : st.active ? 'Sessão aberta, sem marcações ainda.' : 'Nenhuma marcação ainda. Aperte Insert sobre um campo para começar.';
+  ['#btnManHtml', '#btnManSessFolder', '#btnManEnd'].forEach((s) => { $(s).disabled = !has; });
 }
 
 /* Logo / marca d'água */

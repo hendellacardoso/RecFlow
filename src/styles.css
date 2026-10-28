@@ -269,3 +269,31 @@ select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1
 .about-row span { color: var(--muted); }
 .about-row a { color: var(--accent); text-decoration: none; }
 .about-row a:hover { text-decoration: underline; }
+
+/* Manual */
+.man-keys { display: grid; gap: 8px; margin: 6px 0 2px; color: var(--text); }
+.man-keys kbd, .hint kbd {
+  display: inline-block; min-width: 56px; text-align: center; font: 600 12.5px "Segoe UI", sans-serif; padding: 3px 8px; margin-right: 8px;
+  border-radius: 6px; background: var(--sunken); border: 1px solid var(--line); border-bottom-width: 2px;
+}
+.man-look { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 6px; }
+.man-shapes { display: flex; gap: 10px; }
+.man-shapes button {
+  width: 110px; padding: 10px 8px 8px; border-radius: 10px; border: 2px solid var(--line); background: var(--card); color: var(--muted);
+  cursor: pointer; display: grid; justify-items: center; gap: 4px; font: 600 12.5px "Segoe UI", sans-serif;
+}
+.man-shapes button svg { width: 64px; height: 40px; fill: none; stroke: var(--mc, #ff3b30); stroke-width: 3; }
+.man-shapes button svg circle { fill: var(--mc, #ff3b30); stroke: #fff; stroke-width: 2; }
+.man-shapes button.on { border-color: var(--mc, #ff3b30); color: var(--text); }
+.man-form { flex: 1; min-width: 260px; margin: 0; }
+.man-colors { display: flex; gap: 6px; align-items: center; height: 36px; }
+.man-colors button { width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; box-shadow: inset 0 0 0 1px rgba(0,0,0,.2); }
+.man-colors button.on { border-color: var(--text); }
+.man-colors input { width: 28px; height: 26px; padding: 0; border: 0; background: none; cursor: pointer; }
+.man-session { flex-direction: row; align-items: center; justify-content: space-between; margin-top: 12px; }
+.man-session-btns { display: flex; gap: 6px; }
+.man-title { grid-template-columns: 1fr; max-width: 640px; margin: 4px 0 2px; }
+.man-title input { width: 100%; }
+.man-list-head { margin-top: 26px; }
+.man-list-head h3 { margin: 0; }
+.ftype.man { background: color-mix(in srgb, #ff3b30 18%, transparent); color: #e5484d; }

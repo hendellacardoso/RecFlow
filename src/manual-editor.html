@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; media-src 'self' file: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Editor de manual</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="manual-editor.css">
+</head>
+<body class="med">
+  <header class="topbar">
+    <div class="brand"><img class="logo-img" src="../assets/icon.png" alt=""><span>Editor de manual</span><span id="dirty" class="dirty" hidden>• não salvo</span></div>
+    <div class="spacer"></div>
+    <div class="rec-controls">
+      <button id="btnUndo" class="icon-btn" title="Desfazer (Ctrl+Z)" disabled><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/></svg></button>
+      <button id="btnRedo" class="icon-btn" title="Refazer (Ctrl+Y)" disabled><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/></svg></button>
+      <button id="btnFolder" class="btn ghost" title="Abrir a pasta do manual">Pasta</button>
+      <button id="btnHtml" class="btn" title="Abrir o manual no navegador">HTML</button>
+      <button id="btnPdf" class="btn" title="Exportar em PDF">PDF</button>
+      <button id="btnDocx" class="btn" title="Exportar para o Word">Word</button>
+      <button id="btnSave" class="btn primary" title="Salvar (Ctrl+S)">Salvar</button>
+    </div>
+  </header>
+
+  <div class="med-body">
+    <!-- Documento e telas -->
+    <aside class="med-left">
+      <h3>Documento</h3>
+      <label>Título <input type="text" id="docTitle" maxlength="120"></label>
+      <label>Subtítulo <input type="text" id="docSubtitle" maxlength="200" placeholder="Opcional"></label>
+      <label>Autor <input type="text" id="docAuthor" maxlength="120" placeholder="Opcional"></label>
+      <label>Numeração
+        <select id="docNumbering">
+          <option value="screen">Recomeça em cada tela</option>
+          <option value="continuous">Contínua entre as telas</option>
+        </select>
+      </label>
+      <label class="check small-check"><input type="checkbox" id="optLogo"> Logo na capa do PDF/Word</label>
+      <h3 class="screens-h">Vídeo</h3>
+      <div class="vid-box">
+        <div class="vid-name" id="vidName">Nenhum vídeo</div>
+        <div class="vid-btns">
+          <button id="btnVidPick" class="btn small">Escolher…</button>
+          <button id="btnVidRemove" class="btn small ghost">Remover</button>
+        </div>
+        <label class="check small-check"><input type="checkbox" id="optCopyVideo"> Copiar o vídeo para a pasta do manual ao salvar</label>
+        <p class="hint small-hint">Editou o vídeo? Escolha a versão editada e reajuste o momento de cada tela no player ao lado.</p>
+      </div>
+      <h3 class="screens-h">Telas <span id="screenCount" class="muted"></span></h3>
+      <div id="screenList" class="screen-list"></div>
+    </aside>
+
+    <!-- Tela selecionada -->
+    <section class="med-center">
+      <div class="screen-head">
+        <span class="tn" id="tnBadge">1</span>
+        <input type="text" id="screenName" maxlength="80" placeholder="Nome da tela">
+        <input type="text" id="screenGroup" maxlength="80" placeholder="Capítulo (opcional)" list="groupList" title="Telas seguidas com o mesmo capítulo ficam agrupadas no painel do manual">
+        <datalist id="groupList"></datalist>
+        <button id="btnAddMark" class="btn" title="Arraste no print para marcar um novo componente">+ Marcação</button>
+        <button id="btnReplace" class="btn ghost" title="Trocar o print desta tela (as marcações são mantidas)">Trocar print…</button>
+      </div>
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="cv"></canvas>
+        <div class="add-hint" id="addHint" hidden>Arraste sobre o componente para criar a marcação · Esc cancela</div>
+      </div>
+      <p class="hint center-hint">Clique numa marcação para selecionar · arraste para mover · use a bolinha para redimensionar · Delete apaga</p>
+    </section>
+
+    <!-- Itens da tela -->
+    <aside class="med-right">
+      <div class="player" id="playerBox" hidden>
+        <video id="player" controls preload="metadata"></video>
+        <div class="vt-row">
+          <span>Momento desta tela</span>
+          <input type="text" id="vtInput" placeholder="—" title="mm:ss">
+          <button id="btnVtUse" class="btn small" title="Usar o momento atual do player">Usar atual</button>
+          <button id="btnVtGo" class="btn small ghost" title="Ir para este momento">▶</button>
+        </div>
+      </div>
+      <h3>Itens desta tela</h3>
+      <div id="itemList" class="item-list"></div>
+    </aside>
+  </div>
+
+  <div id="loading" class="med-loading">Carregando manual…</div>
+  <div id="toast" class="toast"></div>
+  <script src="marks.js"></script>
+  <script src="manual-editor.js"></script>
+</body>
+</html>

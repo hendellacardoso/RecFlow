@@ -11,6 +11,10 @@ Gravador de tela com editor de vídeo para Windows, feito com Electron (HTML, CS
 - **Editor após a gravação:** reproduzir quadro a quadro, linha do tempo com miniaturas e forma de onda, cortar início/fim e remover trechos, zoom animado em uma área, textos, desenhos, desfazer/refazer
 - **Exportar** em MP4 (3 qualidades), **WhatsApp/e-mail** (até 720p, ~15 MB) ou **GIF animado**
 - **Projetos (.gtproj):** salve a edição e continue depois; com o app instalado, abre com duplo clique
+- **Marcações para manual:** durante a gravação, **Insert** pausa, tira o print, contorna o campo em foco (elipse, arredondado ou retângulo) com o número em círculo e pede a explicação; **Shift+Insert** começa uma tela nova. Gera `tela_01.png`, `descricoes.txt` e `manual.html` (numeração por tela ou contínua)
+- **Manual em HTML** com painel lateral em árvore (capítulos → telas → itens), pesquisa, zoom nas imagens e o **vídeo da gravação** com "Ver no vídeo" em cada tela
+- **Editor de manual:** título, subtítulo, autor, capítulos, nomes das telas, reordenar, excluir, trocar print, mover/adicionar marcações, escolher o vídeo (original ou editado) e reajustar os tempos
+- **Exportar o manual em PDF e Word (.docx)** com capa, logo, sumário e numeração de páginas
 - **Contagem regressiva** (3, 5 ou 10 s) antes de gravar
 - **Teclas pressionadas no vídeo** (posição, tamanho, tempo e modo "só atalhos")
 - **Fundo desfocado na webcam** (IA local, sem tela verde)
@@ -59,6 +63,10 @@ src/cam.*        Janela flutuante da webcam
 src/editor.*     Editor de vídeo (a exportação usa o FFmpeg do pacote ffmpeg-static)
 src/blur.js      Desfoque do fundo da webcam (MediaPipe)
 src/countdown.*  Contagem regressiva
+src/manual.*     Janela de marcação do modo manual (detecção do campo via UI Automation do Windows)
+src/manual-editor.*  Editor de manual
+src/marks.js     Desenho das marcações (elipse/retângulo + número)
+manual-docs.js   Geração do manual: HTML, TXT, PDF e Word
 assets/selfie_segmenter.tflite  Modelo de IA que separa a pessoa do fundo
 ```
 
@@ -66,7 +74,7 @@ As configurações ficam em `%APPDATA%\RecFlow\settings.json` (as da versão ant
 
 ## Observações
 
-- Depois de atualizar o projeto, rode `npm install` de novo (FFmpeg, MediaPipe e RNNoise vêm como pacotes).
+- Depois de atualizar o projeto, rode `npm install` de novo (FFmpeg, MediaPipe, RNNoise e docx vêm como pacotes).
 - O duplo clique em arquivos `.gtproj` funciona com o app instalado pelo `npm run dist`. Rodando com `npm start`, use "Abrir projeto…".
 
 - Os efeitos de clique usam o módulo nativo opcional `uiohook-napi`. Se ele não instalar, o resto funciona normalmente.

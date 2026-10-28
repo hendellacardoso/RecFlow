@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const { pathToFileURL } = require('url');
+const mdocs = require('./manual-docs');
 
 // FFmpeg embutido (usado para finalizar gravações e exportar o vídeo editado)
 let ffmpegPath = null;
@@ -61,10 +62,11 @@ function defaults() {
     webcamWidth: 260, webcamBounds: null, theme: 'system', openEditor: true,
     webcamBlur: false, webcamBlurStrength: 14, micNoise: 'standard',
     countdown: 3,
+    manualEnabled: true, manualTitle: 'Manual', manualShape: 'ellipse', manualColor: '#ff3b30', manualNumbering: 'screen', manualPause: true, manualDir: '',
     keysShow: false, keysPos: 'bc', keysSize: 'm', keysCombosOnly: false, keysDuration: 1.5,
     wmEnabled: false, wmPath: '', wmPos: 'br', wmSize: 14, wmOpacity: 80,
     clickEffects: true, hideApp: true, showBorder: true, minimizeOnRecord: false,
-    hotkeys: { record: 'F12', pause: 'Shift+F12', screenshot: 'F11', draw: 'Ctrl+Shift+D', clear: 'Ctrl+Shift+X', webcam: 'Ctrl+Shift+W' },
+    hotkeys: { record: 'F12', pause: 'Shift+F12', screenshot: 'F11', draw: 'Ctrl+Shift+D', clear: 'Ctrl+Shift+X', webcam: 'Ctrl+Shift+W', manualMark: 'Insert', manualNewScreen: 'Shift+Insert' },
     schedules: []
   };
 }
@@ -174,12 +176,15 @@ function registerHotkeys() {
     webcam: () => {
       settings.webcam = !settings.webcam; saveSettings(); syncCamWindow();
       send('settings:changed', settings);
-    }
+    },
+    manualMark: () => manualMark(false),
+    manualNewScreen: () => manualMark(true)
   };
   const failed = [];
   for (const [key, fn] of Object.entries(actions)) {
     const acc = settings.hotkeys[key];
     if (!acc) continue;
+    if ((key === 'manualMark' || key === 'manualNewScreen') && !settings.manualEnabled) continue;
     try { if (!globalShortcut.register(acc, fn)) failed.push(acc); } catch { failed.push(acc); }
   }
   failedHotkeys = failed;
@@ -430,6 +435,8 @@ function startHook() {
       if (!alive(overlayWin) || rec.paused) return;
       const name = KEY_NAMES[e.keycode];
       if (!name) return;
+      if (settings.manualEnabled && [settings.hotkeys.manualMark, settings.hotkeys.manualNewScreen]
+        .some((acc) => acc && acc.split('+').pop() === name)) return;
       const combo = e.ctrlKey || e.altKey || e.metaKey;
       if (settings.keysCombosOnly && !combo && !/^F\d+$/.test(name)) return;
       overlayWin.webContents.send('key', { name, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey });
@@ -449,6 +456,270 @@ function startHook() {
 function stopHook() {
   if (uIOhook && hookRunning) { try { uIOhook.stop(); } catch { /* ignora */ } hookRunning = false; }
 }
+
+/* ------------------------------------------------------------------ */
+/* Modo manual: Insert marca o campo em foco, Shift+Insert = nova tela  */
+/* ------------------------------------------------------------------ */
+let manual = null;        // sessão atual (pasta, telas e marcações)
+let manualBusy = false;
+let manualWin = null;
+let manualCtx = null;     // dados da marcação em andamento
+let uia = null;           // processo PowerShell com UI Automation (Windows)
+
+// Script que devolve o retângulo do elemento com foco e do elemento sob o mouse
+const UIA_SCRIPT = `
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+function R($el) {
+  if ($el -eq $null) { return $null }
+  $r = $el.Current.BoundingRectangle
+  if ($r.IsEmpty -or $r.Width -le 0) { return $null }
+  return @{ x = [int]$r.X; y = [int]$r.Y; w = [int]$r.Width; h = [int]$r.Height; name = [string]$el.Current.Name; type = [string]$el.Current.LocalizedControlType; pid = [int]$el.Current.ProcessId }
+}
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($line -eq $null) { break }
+  $out = @{}
+  try { $out.focus = R ([System.Windows.Automation.AutomationElement]::FocusedElement) } catch {}
+  try {
+    $p = $line.Split(',')
+    if ($p.Length -ge 2) {
+      $pt = New-Object System.Windows.Point ([double]$p[0]), ([double]$p[1])
+      $out.point = R ([System.Windows.Automation.AutomationElement]::FromPoint($pt))
+    }
+  } catch {}
+  [Console]::Out.WriteLine(($out | ConvertTo-Json -Compress -Depth 3))
+  [Console]::Out.Flush()
+}`;
+
+function uiaStart() {
+  if (process.platform !== 'win32' || (uia && !uia.dead)) return;
+  try {
+    const enc = Buffer.from(UIA_SCRIPT, 'utf16le').toString('base64');
+    const p = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc], { windowsHide: true });
+    uia = { proc: p, buf: '', waiting: [], dead: false };
+    p.stdout.on('data', (d) => {
+      uia.buf += d.toString('utf8');
+      let i;
+      while ((i = uia.buf.indexOf('\n')) >= 0) {
+        const line = uia.buf.slice(0, i).trim(); uia.buf = uia.buf.slice(i + 1);
+        const w = uia.waiting.shift();
+        if (w) { try { w(JSON.parse(line)); } catch { w(null); } }
+      }
+    });
+    p.on('exit', () => { if (uia) { uia.dead = true; uia.waiting.splice(0).forEach((w) => w(null)); } });
+    p.on('error', () => { if (uia) uia.dead = true; });
+    uiaQuery({ x: 0, y: 0 }); // "aquece" (ativa a acessibilidade do Chrome/Edge)
+  } catch { uia = null; }
+}
+function uiaQuery(physPoint) {
+  return new Promise((resolve) => {
+    if (!uia || uia.dead) return resolve(null);
+    const t = setTimeout(() => { const i = uia.waiting.indexOf(done); if (i >= 0) uia.waiting.splice(i, 1); resolve(null); }, 2500);
+    const done = (r) => { clearTimeout(t); resolve(r); };
+    uia.waiting.push(done);
+    uia.proc.stdin.write(`${Math.round(physPoint.x)},${Math.round(physPoint.y)}\n`);
+  });
+}
+function uiaStop() { if (uia && !uia.dead) { try { uia.proc.kill(); } catch { /* ignora */ } } uia = null; }
+
+const manualRoot = () => settings.manualDir || path.join(settings.outputDir, 'Manuais');
+const pad2 = (n) => String(n).padStart(2, '0');
+// segundos já gravados (descontando as pausas)
+function recElapsed() {
+  if (!rec.active || !rec.t0) return null;
+  const now = Date.now();
+  return Math.max(0, (now - rec.t0 - (rec.pausedTotal || 0) - (rec.pauseAt ? now - rec.pauseAt : 0)) / 1000);
+}
+function manualNewSession() {
+  const base = rec.active && rec.file ? `${path.basename(rec.file, path.extname(rec.file))}_manual` : `Manual_${stamp()}`;
+  const dir = path.join(manualRoot(), base);
+  fs.mkdirSync(path.join(dir, 'originais'), { recursive: true });
+  manual = {
+    dir, recFile: rec.active ? rec.file : null, startedAt: new Date().toISOString(), counter: 0, screens: [],
+    title: settings.manualTitle || 'Manual', numbering: settings.manualNumbering || 'screen',
+    video: rec.active && rec.file ? path.relative(dir, rec.file) : null
+  };
+  return manual;
+}
+function manualStatus() {
+  if (!manual) return { active: false, root: manualRoot() };
+  return {
+    active: true, dir: manual.dir, root: manualRoot(),
+    screens: manual.screens.length, items: manual.screens.reduce((t, s) => t + s.marks.length, 0)
+  };
+}
+function manualEnd(notify = true) {
+  if (!manual) return;
+  const st = manualStatus();
+  if (notify && st.items) send('toast', `Manual salvo: ${st.screens} tela(s), ${st.items} item(ns) em ${path.basename(manual.dir)}`);
+  manual = null;
+  send('manual:status', manualStatus());
+}
+
+// Escolhe o retângulo do componente: o campo com foco; se não servir, o elemento sob o mouse
+function pickRect(res, cursorDip) {
+  const toDip = (r) => {
+    if (!r) return null;
+    let d = { x: r.x, y: r.y, width: r.w, height: r.h };
+    if (process.platform === 'win32' && typeof screen.screenToDipRect === 'function') d = screen.screenToDipRect(null, d);
+    return { x: d.x, y: d.y, w: d.width, h: d.height, name: r.name || '', type: r.type || '', pid: r.pid };
+  };
+  const disp = screen.getDisplayNearestPoint(cursorDip);
+  const area = disp.bounds.width * disp.bounds.height;
+  const ok = (r) => r && r.w >= 6 && r.h >= 6 && r.pid !== process.pid && (r.w * r.h) < area * 0.3;
+  const f = toDip(res && res.focus), p = toDip(res && res.point);
+  if (ok(f)) return f;
+  if (ok(p)) return p;
+  return null;
+}
+
+async function captureDisplay(d) {
+  const size = { width: Math.round(d.bounds.width * d.scaleFactor), height: Math.round(d.bounds.height * d.scaleFactor) };
+  const srcs = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
+  const idx = screen.getAllDisplays().findIndex((x) => x.id === d.id);
+  const src = srcs.find((s) => s.display_id === String(d.id)) || srcs[idx] || srcs[0];
+  return src.thumbnail;
+}
+
+async function manualMark(newScreen, testRect) {
+  if (manualBusy || !settings.manualEnabled) return;
+  manualBusy = true;
+  let resume = false;
+  const hidden = [];
+  try {
+    // 1) campo com foco (antes de qualquer janela nossa aparecer)
+    const cursor = screen.getCursorScreenPoint();
+    let rect = null;
+    if (testRect !== undefined) rect = testRect;
+    else if (process.platform === 'win32') {
+      const phys = typeof screen.dipToScreenPoint === 'function' ? screen.dipToScreenPoint(cursor) : cursor;
+      rect = pickRect(await uiaQuery(phys), cursor);
+    }
+    const videoTime = recElapsed();
+    const anchor = rect ? { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 } : cursor;
+    const d = screen.getDisplayNearestPoint(anchor);
+
+    // 2) pausa a gravação
+    if (settings.manualPause !== false && rec.active && !rec.paused) { send('set-paused', true); resume = true; }
+
+    // 3) sessão e tela
+    if (!manual) manualNewSession();
+    let scr = manual.screens[manual.screens.length - 1];
+    if (newScreen || !scr || scr.displayId !== String(d.id)) {
+      // esconde o que não deve sair no print
+      [overlayWin, camWin, toolbarWin, borderWin].forEach((w) => { if (alive(w) && w.isVisible()) { w.hide(); hidden.push(w); } });
+      await new Promise((r) => setTimeout(r, hidden.length ? 220 : 60));
+      const img = await captureDisplay(d);
+      const n = manual.screens.length + 1;
+      const original = path.join(manual.dir, 'originais', `tela_${pad2(n)}.png`);
+      fs.writeFileSync(original, img.toPNG());
+      scr = {
+        videoTime: videoTime == null ? null : Math.round(videoTime * 10) / 10,
+        n, name: `Tela ${n}`, displayId: String(d.id), file: `tela_${pad2(n)}.png`, original, base: img.toDataURL(),
+        imgW: img.getSize().width, imgH: img.getSize().height, scale: img.getSize().width / d.bounds.width, marks: []
+      };
+      manual.screens.push(scr);
+    }
+    const num = settings.manualNumbering === 'continuous' ? manual.counter + 1 : scr.marks.length + 1;
+
+    // 4) janela de marcação sobre a tela congelada
+    const k = scr.scale;
+    manualCtx = {
+      screen: scr, num, resume, hidden, videoTime,
+      init: {
+        image: scr.base, imgW: scr.imgW, imgH: scr.imgH, scale: k,
+        screenN: scr.n, num, marks: scr.marks,
+        firstOfScreen: scr.marks.length === 0, screenName: scr.name,
+        rect: rect ? { x: (rect.x - d.bounds.x) * k, y: (rect.y - d.bounds.y) * k, w: rect.w * k, h: rect.h * k } : null,
+        fieldName: rect ? [rect.name, rect.type].filter(Boolean).join(' · ') : '',
+        shape: settings.manualShape || 'ellipse', color: settings.manualColor || '#ff3b30',
+        numbering: settings.manualNumbering || 'screen'
+      }
+    };
+    manualWin = new BrowserWindow({
+      ...d.bounds, frame: false, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false,
+      fullscreenable: false, hasShadow: false, show: false, backgroundColor: '#000000',
+      title: 'GT Manual', webPreferences: webPrefs()
+    });
+    manualWin.setAlwaysOnTop(true, 'screen-saver', 4);
+    manualWin.setContentProtection(true);
+    manualWin.loadFile(path.join(__dirname, 'src', 'manual.html'));
+    manualWin.once('ready-to-show', () => { if (alive(manualWin)) { manualWin.setBounds(d.bounds); manualWin.show(); manualWin.focus(); } });
+    manualWin.on('closed', () => { manualWin = null; manualFinishMark(); });
+  } catch (e) {
+    send('toast', `Modo manual: ${e.message}`, true);
+    hidden.forEach((w) => alive(w) && w.showInactive());
+    if (resume && rec.active) send('set-paused', false);
+    manualBusy = false;
+  }
+}
+
+// chamado ao fechar a janela (confirmado ou cancelado)
+function manualFinishMark() {
+  const c = manualCtx; manualCtx = null;
+  if (c) {
+    c.hidden.forEach((w) => { if (alive(w)) w.showInactive(); });
+    if (c.resume && rec.active && rec.paused) setTimeout(() => send('set-paused', false), 250);
+  }
+  manualBusy = false;
+  send('manual:status', manualStatus());
+}
+
+function manualDoc() {
+  const m = manual;
+  return mdocs.normalize({
+    title: m.title, numbering: m.numbering, startedAt: m.startedAt, updatedAt: new Date().toISOString(), recording: m.recFile, video: m.video,
+    screens: m.screens.map((sc) => ({ n: sc.n, name: sc.name, file: sc.file, original: path.relative(m.dir, sc.original), scale: sc.scale, videoTime: sc.videoTime, marks: sc.marks }))
+  }, m.dir);
+}
+function manualWriteDocs() {
+  if (!manual) return;
+  const prev = path.join(manual.dir, 'manual.json');
+  // preserva campos editados no editor de manual (subtítulo, autor)
+  let extra = {};
+  try { const o = JSON.parse(fs.readFileSync(prev, 'utf8')); extra = { subtitle: o.subtitle, author: o.author }; } catch { /* novo */ }
+  // grava o manual quando a gravação termina: o vídeo final já existe
+  mdocs.writeDocs(manual.dir, { ...manualDoc(), ...extra });
+}
+
+/* ------------------------------------------------------------------ */
+/* Editor de manual                                                     */
+/* ------------------------------------------------------------------ */
+const manualEditors = new Map(); // dir -> janela
+function openManualEditor(dir) {
+  if (manual && path.resolve(manual.dir) === path.resolve(dir)) manualEnd(false); // edição encerra a sessão de captura
+  const open = manualEditors.get(dir);
+  if (open && alive(open)) { open.show(); open.focus(); return; }
+  const w = new BrowserWindow({
+    width: 1360, height: 880, minWidth: 1080, minHeight: 680, icon: ICON, show: false, autoHideMenuBar: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#14161b' : '#f3f4f7',
+    title: `${path.basename(dir)} — Editor de manual`, webPreferences: webPrefs()
+  });
+  w.setMenu(null);
+  w.loadFile(path.join(__dirname, 'src', 'manual-editor.html'), { query: { dir } });
+  w.once('ready-to-show', () => { w.maximize(); w.show(); });
+  w.webContents.on('will-prevent-unload', (ev) => {
+    const r = dialog.showMessageBoxSync(w, {
+      type: 'question', buttons: ['Sair sem salvar', 'Cancelar'], defaultId: 1, cancelId: 1,
+      title: 'Manual não salvo', message: 'Há alterações que não foram salvas no manual.'
+    });
+    if (r === 0) ev.preventDefault();
+  });
+  manualEditors.set(dir, w);
+  w.on('closed', () => manualEditors.delete(dir));
+}
+function readLogo() {
+  try {
+    if (!settings.wmPath) return null;
+    const img = nativeImage.createFromPath(settings.wmPath);
+    return img.isEmpty() ? null : img.toDataURL();
+  } catch { return null; }
+}
+const safeName = (s) => String(s || 'Manual').replace(/[\\/:*?"<>|]+/g, '-').trim().slice(0, 80) || 'Manual';
 
 /* ------------------------------------------------------------------ */
 /* Captura de imagem                                                    */
@@ -793,7 +1064,8 @@ function registerIpc() {
     if ('hideApp' in patch && alive(mainWin)) mainWin.setContentProtection(!!settings.hideApp);
     if ('theme' in patch) nativeTheme.themeSource = settings.theme || 'system';
     if (['webcam', 'webcamShape', 'webcamDeviceId', 'webcamMirror', 'webcamWidth', 'webcamBlur', 'webcamBlurStrength', 'mode', 'region', 'displayId'].some((k) => k in patch)) syncCamWindow();
-    const failed = hotkeysChanged ? registerHotkeys() : [];
+    if ('manualEnabled' in patch) { if (settings.manualEnabled) uiaStart(); else uiaStop(); }
+    const failed = hotkeysChanged || 'manualEnabled' in patch ? registerHotkeys() : [];
     return { settings, failed };
   });
 
@@ -847,6 +1119,8 @@ function registerIpc() {
     rec.file = path.join(settings.outputDir, `Gravacao_${stamp()}.${ext === 'webm' ? 'webm' : 'mp4'}`);
     rec.stream = fs.createWriteStream(rec.file);
     rec.active = true; rec.paused = false; rec.displayId = displayId || cursorDisplayId();
+    rec.t0 = Date.now(); rec.pausedTotal = 0; rec.pauseAt = null;
+    if (manual) manualEnd(true);   // cada gravação começa um manual novo
     if (settings.mode === 'area' && settings.showBorder) showBorder();
     if (alive(camWin)) { if (!camInsideTarget()) placeCam('br'); camWin.moveTop(); }
     if (settings.mode === 'screen' || settings.mode === 'area') {
@@ -870,6 +1144,7 @@ function registerIpc() {
       if (alive(overlayWin)) overlayWin.webContents.send('keys:config', null);
       if (!drawing) closeOverlay();
       updateTray();
+      if (manual && manual.recFile === file) { if (manual.screens.some((x) => x.marks.length)) manualWriteDocs(); manualEnd(true); }
       if (pendingQuit) { resolve(file); setImmediate(() => app.quit()); return; }
       await finalizeRecording(file);
       resolve(file);
@@ -878,7 +1153,151 @@ function registerIpc() {
     if (rec.stream) rec.stream.end(finish); else finish();
   }));
 
-  ipcMain.on('rec:paused', (_e, p) => { rec.paused = !!p; updateTray(); });
+  ipcMain.on('rec:paused', (_e, p) => {
+    if (p && !rec.pauseAt) rec.pauseAt = Date.now();
+    if (!p && rec.pauseAt) { rec.pausedTotal += Date.now() - rec.pauseAt; rec.pauseAt = null; }
+    rec.paused = !!p; updateTray();
+  });
+
+  // modo manual
+  ipcMain.handle('manual:init', () => (manualCtx ? manualCtx.init : null));
+  ipcMain.handle('manual:save', (_e, data) => {
+    const c = manualCtx;
+    if (!c || !manual) return { ok: false };
+    try {
+      const mk = {
+        num: c.num, text: String(data.text || '').trim(), shape: data.shape, color: data.color,
+        rect: data.rect, fieldName: c.init.fieldName,
+        videoTime: c.videoTime == null ? null : Math.round(c.videoTime * 10) / 10
+      };
+      if (c.screen.videoTime == null && c.videoTime != null) c.screen.videoTime = Math.round(c.videoTime * 10) / 10;
+      if (data.screenName && data.screenName.trim()) c.screen.name = data.screenName.trim();
+      c.screen.marks.push(mk);
+      manual.counter = Math.max(manual.counter, c.num);
+      fs.writeFileSync(path.join(manual.dir, c.screen.file), Buffer.from(data.png.split(',')[1], 'base64'));
+      if (data.shape && data.shape !== settings.manualShape) { settings.manualShape = data.shape; saveSettings(); send('settings:changed', settings); }
+      manualWriteDocs();
+      return { ok: true };
+    } catch (e) { return { ok: false, error: e.message }; }
+  });
+  ipcMain.on('manual:close', () => { if (alive(manualWin)) manualWin.close(); });
+  ipcMain.handle('manual:status', () => manualStatus());
+  ipcMain.handle('manual:end', () => { manualEnd(true); return manualStatus(); });
+  ipcMain.handle('manual:openFolder', (_e, which) => {
+    const target = which === 'session' && manual ? manual.dir : manualRoot();
+    fs.mkdirSync(target, { recursive: true });
+    return shell.openPath(target);
+  });
+  ipcMain.handle('manual:openHtml', () => {
+    const f = manual && path.join(manual.dir, 'manual.html');
+    return f && fs.existsSync(f) ? shell.openPath(f) : 'sem manual';
+  });
+  ipcMain.handle('manual:setTitle', (_e, t) => {
+    settings.manualTitle = String(t || '').trim() || 'Manual'; saveSettings();
+    if (manual) { manual.title = settings.manualTitle; if (manual.screens.some((x) => x.marks.length)) manualWriteDocs(); }
+    return settings.manualTitle;
+  });
+  ipcMain.handle('mdoc:list', () => mdocs.listManuals(manualRoot()));
+  ipcMain.handle('mdoc:edit', (_e, dir) => { if (dir && fs.existsSync(path.join(dir, 'manual.json'))) openManualEditor(dir); });
+  ipcMain.handle('mdoc:openOther', async (e) => {
+    const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Abrir manual', defaultPath: manualRoot(), properties: ['openFile'],
+      filters: [{ name: 'Manual do RecFlow', extensions: ['json'] }]
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const dir = path.dirname(r.filePaths[0]);
+    openManualEditor(dir);
+    return dir;
+  });
+  ipcMain.handle('mdoc:load', (_e, dir) => {
+    try {
+      const doc = mdocs.loadManual(dir);
+      const originals = doc.screens.map((sc) => {
+        const f = path.join(dir, sc.original);
+        const alt = path.join(dir, sc.file);
+        const img = nativeImage.createFromPath(fs.existsSync(f) ? f : alt);
+        return img.isEmpty() ? null : img.toDataURL();
+      });
+      const vAbs = doc.video ? path.resolve(dir, doc.video) : null;
+      const video = vAbs && fs.existsSync(vAbs) ? { abs: vAbs, rel: doc.video, url: pathToFileURL(vAbs).href, name: path.basename(vAbs) } : null;
+      return { ok: true, doc, originals, video, videoMissing: !!(doc.video && !video), hasLogo: !!readLogo() };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('mdoc:save', (_e, dir, doc, pngs, originals) => {
+    try {
+      // lê os originais na ordem nova (do arquivo atual ou da imagem trocada)
+      const bufs = doc.screens.map((sc, i) => (originals[i]
+        ? Buffer.from(originals[i].split(',')[1], 'base64')
+        : fs.readFileSync(path.join(dir, sc.original))));
+      // apaga os prints antigos e grava na ordem nova
+      fs.readdirSync(dir).filter((f) => /^tela_\d+\.png$/i.test(f)).forEach((f) => fs.unlinkSync(path.join(dir, f)));
+      const od = path.join(dir, 'originais'); fs.mkdirSync(od, { recursive: true });
+      fs.readdirSync(od).filter((f) => /^tela_\d+\.png$/i.test(f)).forEach((f) => fs.unlinkSync(path.join(od, f)));
+      doc.screens.forEach((sc, i) => {
+        const n = pad2(i + 1);
+        sc.n = i + 1; sc.file = `tela_${n}.png`; sc.original = path.join('originais', `tela_${n}.png`);
+        fs.writeFileSync(path.join(od, `tela_${n}.png`), bufs[i]);
+        fs.writeFileSync(path.join(dir, sc.file), Buffer.from(pngs[i].split(',')[1], 'base64'));
+      });
+      if (doc.copyVideo && doc.video) {
+        const abs = path.resolve(dir, doc.video);
+        if (fs.existsSync(abs) && path.dirname(abs) !== path.resolve(dir)) {
+          const target = path.join(dir, `video${path.extname(abs).toLowerCase()}`);
+          fs.copyFileSync(abs, target);
+          doc.video = path.basename(target);
+        }
+      }
+      delete doc.copyVideo;
+      doc.updatedAt = new Date().toISOString();
+      const norm = mdocs.normalize(doc, dir);
+      mdocs.writeDocs(dir, norm);
+      return { ok: true, doc: norm };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('mdoc:pickVideo', async (e, dir) => {
+    const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Vídeo do manual', defaultPath: settings.outputDir, properties: ['openFile'],
+      filters: [{ name: 'Vídeos', extensions: ['mp4', 'webm'] }]
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const abs = r.filePaths[0];
+    return { abs, rel: path.relative(dir, abs), url: pathToFileURL(abs).href, name: path.basename(abs) };
+  });
+  ipcMain.handle('mdoc:pickImage', async (e) => {
+    const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Trocar o print desta tela', properties: ['openFile'],
+      filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }]
+    });
+    if (r.canceled || !r.filePaths[0]) return null;
+    const img = nativeImage.createFromPath(r.filePaths[0]);
+    return img.isEmpty() ? null : img.toDataURL();
+  });
+  ipcMain.handle('mdoc:export', async (e, dir, kind, opts = {}) => {
+    try {
+      const doc = mdocs.loadManual(dir);
+      const ext = kind === 'docx' ? 'docx' : 'pdf';
+      const r = await dialog.showSaveDialog(BrowserWindow.fromWebContents(e.sender), {
+        defaultPath: path.join(dir, `${safeName(doc.title)}.${ext}`),
+        filters: [ext === 'pdf' ? { name: 'PDF', extensions: ['pdf'] } : { name: 'Documento do Word', extensions: ['docx'] }]
+      });
+      if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+      const logo = opts.logo ? readLogo() : null;
+      if (ext === 'pdf') await mdocs.exportPdf(dir, doc, r.filePath, { logo });
+      else await mdocs.exportDocx(dir, doc, r.filePath, { logo });
+      return { ok: true, file: r.filePath };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('mdoc:openHtml', (_e, dir) => { const f = path.join(dir, 'manual.html'); return fs.existsSync(f) ? shell.openPath(f) : 'sem manual'; });
+  ipcMain.handle('mdoc:openFolder', (_e, dir) => shell.openPath(dir));
+  ipcMain.handle('mdoc:openFile', (_e, f) => (f && fs.existsSync(f) ? shell.openPath(f) : null));
+  ipcMain.handle('mdoc:hasLogo', () => !!readLogo());
+
+  ipcMain.handle('manual:chooseDir', async (e) => {
+    const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), { properties: ['openDirectory', 'createDirectory'], defaultPath: manualRoot() });
+    if (r.canceled || !r.filePaths[0]) return null;
+    settings.manualDir = r.filePaths[0]; saveSettings();
+    return settings.manualDir;
+  });
 
   ipcMain.handle('screenshot:take', () => takeScreenshot());
 
@@ -1093,6 +1512,8 @@ if (!app.requestSingleInstanceLock()) {
     });
     registerIpc();
     createMainWindow();
+    if (settings.manualEnabled) uiaStart();
+    if (process.env.RECFLOW_TEST) global.__recflow = { manualMark, manualStatus, manualEnd, mdocs };
     const proj = projectFromArgv(process.argv);
     if (proj) openProject(proj);
     syncCamWindow();
@@ -1112,6 +1533,6 @@ if (!app.requestSingleInstanceLock()) {
       if (!pendingQuit) { pendingQuit = true; send('rec:force-stop'); }
     }
   });
-  app.on('will-quit', () => { globalShortcut.unregisterAll(); stopHook(); });
+  app.on('will-quit', () => { globalShortcut.unregisterAll(); stopHook(); uiaStop(); });
   app.on('window-all-closed', () => app.quit());
 }
