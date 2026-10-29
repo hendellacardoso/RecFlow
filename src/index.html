@@ -65,8 +65,8 @@
       <button class="nav" data-panel="manual">Manual</button>
       <button class="nav" data-panel="brand">Identidade visual</button>
       <button class="nav" data-panel="ai">IA</button>
+      <button class="nav" data-panel="settings">Configurações</button>
       <button class="nav" data-panel="about">Sobre</button>
-      <div class="sidebar-foot" id="outputShort"></div>
     </aside>
 
     <main>
@@ -143,7 +143,7 @@
           </label>
         </div>
         <div class="checks">
-          <label class="check"><input type="checkbox" data-key="hideApp"> Ocultar a janela do gravador no vídeo</label>
+          <label class="check"><input type="checkbox" data-key="hideApp"> Ocultar a janela do RecFlow no vídeo (só durante a gravação; fora dela os prints funcionam)</label>
           <label class="check"><input type="checkbox" data-key="showBorder"> Mostrar borda na área gravada</label>
           <label class="check"><input type="checkbox" data-key="minimizeOnRecord"> Minimizar ao iniciar a gravação</label>
           <label class="check"><input type="checkbox" data-key="openEditor"> Abrir o editor ao terminar a gravação</label>
@@ -231,28 +231,6 @@
           <p class="hint">Use um PNG com fundo transparente. O tamanho é em % da largura do vídeo.</p>
         </div>
 
-        <h3>Aparência</h3>
-        <div class="form">
-          <label>Tema
-            <select data-key="theme">
-              <option value="system">Igual ao Windows</option>
-              <option value="dark">Escuro</option>
-              <option value="light">Claro</option>
-            </select>
-          </label>
-        </div>
-        <h3>Pasta de saída</h3>
-        <div class="folder">
-          <code id="outputDir"></code>
-          <button id="btnChooseFolder" class="btn">Alterar</button>
-          <button id="btnOpenFolder" class="btn ghost">Abrir</button>
-        </div>
-        <h3>Configurações</h3>
-        <div class="folder">
-          <span class="hint grow-hint">Leve suas configurações (atalhos, áudio, manual, identidade visual…) para outro computador. As chaves de IA não são exportadas.</span>
-          <button id="btnSetExport" class="btn">Exportar…</button>
-          <button id="btnSetImport" class="btn ghost">Importar…</button>
-        </div>
       </section>
 
       <!-- ÁUDIO -->
@@ -607,6 +585,31 @@
         </ul>
       </section>
 
+      <!-- CONFIGURAÇÕES -->
+      <section class="panel" id="panel-settings">
+        <h2>Configurações</h2>
+        <h3>Aparência</h3>
+        <div class="theme-pick" id="themePick">
+          <button data-theme="light"><span class="tp tp-light"><i></i><b></b></span>Claro</button>
+          <button data-theme="dark"><span class="tp tp-dark"><i></i><b></b></span>Escuro</button>
+          <button data-theme="system"><span class="tp tp-sys"><i></i><b></b></span>Igual ao Windows</button>
+        </div>
+        <p class="hint">Também dá para trocar entre claro e escuro pelo botão ☀/☾ na barra de status, no rodapé da janela.</p>
+        <label class="check"><input type="checkbox" data-key="statusBar"> Mostrar a barra de status</label>
+        <h3>Pasta de saída</h3>
+        <div class="folder">
+          <code id="outputDir"></code>
+          <button id="btnChooseFolder" class="btn">Alterar</button>
+          <button id="btnOpenFolder" class="btn ghost">Abrir</button>
+        </div>
+        <h3>Backup das configurações</h3>
+        <div class="folder">
+          <span class="hint grow-hint">Leve suas configurações (atalhos, áudio, manual, identidade visual…) para outro computador. As chaves de IA não são exportadas.</span>
+          <button id="btnSetExport" class="btn">Exportar…</button>
+          <button id="btnSetImport" class="btn ghost">Importar…</button>
+        </div>
+      </section>
+
       <!-- SOBRE -->
       <section class="panel" id="panel-about">
         <div class="about">
@@ -640,6 +643,21 @@
     </main>
   </div>
 
+  <footer class="statusbar" id="statusBar">
+    <button class="sb-item sb-link" id="sbFolder" title="Abrir a pasta das gravações"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span id="sbFolderTxt"></span></button>
+    <span class="sb-item" id="sbDisk" title="Espaço livre no disco das gravações"></span>
+    <span class="sb-sep"></span>
+    <span class="sb-item" id="sbState"><span class="sb-dot" id="sbDot"></span><span id="sbStateTxt">Pronto</span></span>
+    <span class="sb-item" id="sbTarget"></span>
+    <span class="sb-item" id="sbFormat"></span>
+    <span class="sb-item" id="sbAudio"></span>
+    <span class="sb-item" id="sbEngine"></span>
+    <span class="sb-item" id="sbAi" title="Inteligência artificial"></span>
+    <span class="sb-grow"></span>
+    <span class="sb-item" id="sbKeys" title="Atalhos principais"></span>
+    <button class="sb-item sb-link" id="sbTheme" title="Alternar tema claro/escuro"></button>
+    <span class="sb-item sb-ver" id="sbVer"></span>
+  </footer>
   <div class="dlg" id="dlg" hidden>
     <div class="dlg-card">
       <h2 id="dlgTitle"></h2>

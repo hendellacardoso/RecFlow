@@ -70,7 +70,7 @@ function defaults() {
     clickEffects: true, hideApp: true, showBorder: true, minimizeOnRecord: false,
     engine: 'browser', hwEncoder: 'auto', hwGrabber: 'gdigrab', hwEncoders: null,
     limitMode: 'off', limitMinutes: 30, limitMB: 2000, limitAction: 'split',
-    separateTracks: false, recordClicks: true,
+    separateTracks: false, recordClicks: true, statusBar: true,
     brand: { name: '', color: '#e5484d', color2: '#111827', logoPath: '', footer: '', site: '' }, brandManuals: true,
     hotkeys: { record: 'F12', pause: 'Shift+F12', screenshot: 'F11', draw: 'Ctrl+Shift+D', clear: 'Ctrl+Shift+X', webcam: 'Ctrl+Shift+W', manualMark: 'Insert', manualNewScreen: 'Shift+Insert' },
     schedules: []
@@ -148,16 +148,18 @@ function webPrefs(extra = {}) {
 /* ------------------------------------------------------------------ */
 /* Janela principal e bandeja                                           */
 /* ------------------------------------------------------------------ */
+// A janela do RecFlow some do vídeo só enquanto grava; fora disso, prints funcionam normalmente
+function applyHide() { if (alive(mainWin)) mainWin.setContentProtection(!!settings.hideApp && !!rec.active); }
 function createMainWindow() {
   mainWin = new BrowserWindow({
-    width: 1120, height: 740, minWidth: 960, minHeight: 620,
+    width: 1320, height: 760, minWidth: 1000, minHeight: 620,
     backgroundColor: '#14161b', icon: ICON, title: APP_TITLE, autoHideMenuBar: true, show: false,
     webPreferences: webPrefs({ backgroundThrottling: false })
   });
   mainWin.setMenu(null);
   mainWin.loadFile(path.join(__dirname, 'src', 'index.html'));
   mainWin.once('ready-to-show', () => mainWin.show());
-  mainWin.setContentProtection(!!settings.hideApp);
+  applyHide();
   mainWin.on('close', (e) => {
     // Fechar durante a gravação apenas esconde na bandeja
     if (rec.active && !app.isQuitting) { e.preventDefault(); mainWin.hide(); }
@@ -1435,7 +1437,7 @@ function importSettings(file) {
   settings = { ...settings, ...inc, hotkeys: { ...settings.hotkeys, ...(inc.hotkeys || {}) }, brand: { ...settings.brand, ...(inc.brand || {}) } };
   saveSettings();
   nativeTheme.themeSource = settings.theme || 'system';
-  if (alive(mainWin)) mainWin.setContentProtection(!!settings.hideApp);
+  applyHide();
   if (settings.manualEnabled) uiaStart(); else uiaStop();
   syncCamWindow(); applyBrand();
   const failed = registerHotkeys();
@@ -1453,7 +1455,7 @@ function registerIpc() {
     const hotkeysChanged = !!patch.hotkeys;
     settings = { ...settings, ...patch, hotkeys: { ...settings.hotkeys, ...(patch.hotkeys || {}) }, brand: { ...settings.brand, ...(patch.brand || {}) } };
     saveSettings();
-    if ('hideApp' in patch && alive(mainWin)) mainWin.setContentProtection(!!settings.hideApp);
+    if ('hideApp' in patch) applyHide();
     if ('theme' in patch) nativeTheme.themeSource = settings.theme || 'system';
     if (['webcam', 'webcamShape', 'webcamDeviceId', 'webcamMirror', 'webcamWidth', 'webcamBlur', 'webcamBlurStrength', 'mode', 'region', 'displayId'].some((k) => k in patch)) syncCamWindow();
     if ('manualEnabled' in patch) { if (settings.manualEnabled) uiaStart(); else uiaStop(); }
@@ -1538,6 +1540,7 @@ function registerIpc() {
     journalUpdate();
     rec.active = true; rec.paused = false; rec.displayId = displayId || cursorDisplayId();
     rec.t0 = Date.now(); rec.pausedTotal = 0; rec.pauseAt = null;
+    applyHide();
     if (manual && !continuation) manualEnd(true);   // cada gravação começa um manual novo
     if (settings.mode === 'area' && settings.showBorder) showBorder();
     if (alive(camWin)) { if (!camInsideTarget()) placeCam('br'); camWin.moveTop(); }
@@ -1587,6 +1590,7 @@ function registerIpc() {
     const finish = async () => {
       const tracks = rec.tracks; const cap = rec.cap; const engine = rec.engine; const id = rec.id;
       rec.active = false; rec.paused = false; rec.stream = null; rec.cap = null;
+      applyHide();
       stopDiskMonitor();
       closeBorder(); stopHook();
       if (alive(overlayWin)) overlayWin.webContents.send('keys:config', null);

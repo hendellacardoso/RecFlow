@@ -82,6 +82,7 @@ async function init() {
   const r = await api.getSettings();
   S = r.settings; hookAvailable = r.hookAvailable;
   $('#appVersion').textContent = `Versão ${r.version || '1.0.0'}`;
+  appVersion = r.version || '';
   setAccent(r.accent);
   if (r.failedHotkeys && r.failedHotkeys.length) toast(`Atalho indisponível: ${r.failedHotkeys.join(', ')}`, true);
   $('#hookWarn').hidden = hookAvailable;
@@ -89,6 +90,7 @@ async function init() {
   bindSettings();
   bindUi();
   setupNew();
+  setupStatus();
   renderAll();
   refreshRecovery();
   refreshSources();
@@ -125,13 +127,13 @@ function renderAll() {
   renderSchedules();
   refreshFiles();
   $('#outputDir').textContent = S.outputDir;
-  $('#outputShort').textContent = S.outputDir;
   refreshWatermark();
   renderManual();
   renderEngine();
   renderLimits();
   renderBrand();
   updateUI();
+  renderStatus();
 }
 
 function setEl(e, v) {
@@ -157,6 +159,7 @@ function bindSettings() {
       updateLabels();
       applyLive(k);
       renderSummary();
+      renderStatus();
     });
   });
 }
@@ -222,7 +225,7 @@ function bindUi() {
   window.addEventListener('resize', () => drawTestWave());
   $('#btnChooseFolder').onclick = async () => {
     const d = await api.chooseFolder();
-    if (d) { S.outputDir = d; $('#outputDir').textContent = d; $('#outputShort').textContent = d; refreshFiles(); }
+    if (d) { S.outputDir = d; $('#outputDir').textContent = d; refreshFiles(); refreshDisk(); }
   };
   $('#btnOpenFolder').onclick = () => api.openFolder();
   $('#btnFilesFolder').onclick = () => api.openFolder();
@@ -305,6 +308,7 @@ function fillGrid(sel, items, isSel, sub, onPick) {
 }
 
 function renderSummary() {
+  renderStatus();
   const parts = [MODE_LABEL[S.mode]];
   if (S.mode === 'screen') { const s = sources.screens.find((x) => x.displayId === S.displayId); if (s) parts.push(`${s.name} · ${s.width}×${s.height}`); }
   if (S.mode === 'area' && S.region) parts.push(`${S.region.w}×${S.region.h}`);
@@ -813,6 +817,7 @@ function updateUI() {
   $('#btnCam').title = `Mostrar / ocultar webcam (${hk.webcam || 'sem atalho'})`;
   $('#btnDraw').title = `Desenhar na tela (${hk.draw || 'sem atalho'})`;
   document.title = state.recording ? `● ${state.paused ? 'Pausado' : 'Gravando'} — RecFlow` : 'RecFlow';
+  renderStatus();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1396,6 +1401,7 @@ const AI_KEY_LINKS = {
 };
 async function refreshAi() {
   aiState = await api.aiList();
+  refreshAiStatus();
   $('#aiEncWarn').hidden = aiState.encryption;
   const list = $('#aiList'); list.innerHTML = '';
   if (!aiState.profiles.length) list.appendChild(el('div', 'empty', 'Nenhuma credencial cadastrada. Clique em "Adicionar credencial".'));
@@ -1567,6 +1573,72 @@ function setupNew() {
   $('#btnManMerge').onclick = mergeDialog;
   $('#dlg').addEventListener('click', (e) => { if (e.target.id === 'dlg') hideDlg(); });
   bindBrand(); bindAi();
+}
+
+/* ------------------------------------------------------------------ */
+/* Barra de status e tema                                               */
+/* ------------------------------------------------------------------ */
+let diskFree = null, appVersion = '';
+async function refreshDisk() {
+  try { diskFree = await api.recDiskFree(); } catch { diskFree = null; }
+  renderStatus();
+}
+async function refreshAiStatus() {
+  try { aiStatus = await api.aiAvailable(); } catch { aiStatus = null; }
+  renderStatus();
+}
+let aiStatus = null;
+const isDark = () => window.matchMedia('(prefers-color-scheme: dark)').matches;
+function renderStatus() {
+  const bar = $('#statusBar'); if (!bar) return;
+  bar.hidden = S.statusBar === false;
+  $('#sbFolderTxt').textContent = S.outputDir || '';
+  $('#sbFolder').title = `Abrir a pasta das gravações\n${S.outputDir || ''}`;
+  const d = $('#sbDisk');
+  d.textContent = diskFree == null ? '' : `${fmtBytes(diskFree)} livres`;
+  d.classList.toggle('warn', diskFree != null && diskFree < 2048 * 1024 * 1024);
+  // estado
+  const st = counting ? ['count', 'Contagem…'] : state.recording ? (state.paused ? ['paused', `Pausado · ${fmtTime(elapsed())}`] : ['rec', `Gravando · ${fmtTime(elapsed())}`]) : ['', 'Pronto'];
+  $('#sbDot').className = `sb-dot ${st[0]}`;
+  $('#sbStateTxt').textContent = st[1];
+  // alvo
+  let target = MODE_LABEL[S.mode] || '';
+  if (S.mode === 'screen') { const sc = sources.screens.find((x) => x.displayId === S.displayId); if (sc) target += ` · ${sc.width}×${sc.height}`; }
+  if (S.mode === 'area' && S.region) target += ` · ${S.region.w}×${S.region.h}`;
+  if (S.mode === 'window' && S.windowName) target += ` · ${S.windowName}`;
+  $('#sbTarget').textContent = target; $('#sbTarget').title = target;
+  $('#sbFormat').textContent = `${String(S.format || 'mp4').toUpperCase()} · ${S.fps} fps · ${S.bitrate} Mbps`;
+  const au = [];
+  if (S.systemAudio && S.mode !== 'webcam') au.push('sistema');
+  if (S.mic) au.push('microfone');
+  $('#sbAudio').textContent = au.length ? `Áudio: ${au.join(' + ')}${S.separateTracks && au.length > 1 ? ' (trilhas)' : ''}` : 'Sem áudio';
+  const enc = S.engine === 'ffmpeg' ? `FFmpeg${S.hwEncoder && S.hwEncoder !== 'auto' ? ` (${((S.hwEncoders || []).find((x) => x.id === S.hwEncoder) || { label: S.hwEncoder }).label})` : ' (placa de vídeo)'}` : 'Padrão';
+  $('#sbEngine').textContent = `Motor: ${enc}`;
+  const ai = $('#sbAi');
+  const on = aiStatus && (aiStatus.text || aiStatus.transcribe || aiStatus.tts);
+  ai.textContent = on ? 'IA: ativa' : 'IA: desligada';
+  ai.classList.toggle('on', !!on);
+  const hk = S.hotkeys || {};
+  $('#sbKeys').textContent = [hk.record && `${hk.record} gravar`, hk.pause && `${hk.pause} pausar`, S.manualEnabled && hk.manualMark && `${hk.manualMark} manual`].filter(Boolean).join(' · ');
+  $('#sbTheme').textContent = isDark() ? '☾ Escuro' : '☀ Claro';
+  $('#sbVer').textContent = appVersion ? `v${appVersion}` : '';
+  $$('#themePick button').forEach((b) => b.classList.toggle('on', b.dataset.theme === (S.theme || 'system')));
+}
+async function setTheme(t) {
+  S.theme = t;
+  await save({ theme: t }, true);
+  setEl($('[data-key="theme"]') || document.createElement('input'), t);
+  setTimeout(renderStatus, 80);
+}
+function setupStatus() {
+  $('#sbFolder').onclick = () => api.openFolder();
+  $('#sbTheme').onclick = () => setTheme(isDark() ? 'light' : 'dark');
+  $('#sbAi').onclick = () => showPanel('ai');
+  $$('#themePick button').forEach((b) => { b.onclick = () => setTheme(b.dataset.theme); });
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderStatus);
+  refreshDisk(); refreshAiStatus();
+  setInterval(refreshDisk, 30000);
+  setInterval(() => { if (state.recording || counting) renderStatus(); }, 1000);
 }
 
 init();
