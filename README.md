@@ -2,7 +2,11 @@
 
 # RecFlow
 
-Gravador de tela com editor de vídeo para Windows, feito com Electron (HTML, CSS e JavaScript).
+Gravador de tela com editor de vídeo para Windows, feito com Electron (HTML, CSS e JavaScript). Gratuito e de código aberto (licença MIT).
+
+## Download
+
+Baixe o instalador mais recente em **[Releases](https://github.com/hendellacardoso/RecFlow/releases/latest)** (`RecFlow-Setup.exe`). Requer Windows 10 ou 11 (64 bits). Para desinstalar: Configurações do Windows › Aplicativos › RecFlow › Desinstalar.
 
 ## Recursos
 
@@ -56,7 +60,7 @@ npm start
 npm run dist
 ```
 
-O instalador fica na pasta `dist/`.
+O instalador fica na pasta `dist/`. Para publicar uma versão no GitHub, rode `publicar-versao.bat`: ele cria a tag e o GitHub Actions gera o instalador (assinado pelo SignPath, quando configurado) e publica em Releases.
 
 ## Estrutura
 
@@ -96,6 +100,23 @@ As configurações ficam em `%APPDATA%\RecFlow\settings.json` (as credenciais de
 - Desenho e efeitos de clique aparecem nos modos **Tela inteira** e **Área**. No modo **Janela**, apenas o conteúdo da própria janela é gravado.
 - A gravação agendada só dispara com o programa aberto (pode estar minimizado na bandeja).
 - Arquivos WebM gravados pelo navegador não trazem a duração no cabeçalho; alguns players demoram para permitir avançar. O MP4 (padrão) não tem esse problema.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- Committers and reviewers: [Hendell A. Cardoso](https://github.com/hendellacardoso)
+- Approvers: [Hendell A. Cardoso](https://github.com/hendellacardoso)
+
+Detalhes em [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
+
+## Privacidade
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. O RecFlow não envia nenhum dado ao desenvolvedor; os recursos de IA são opcionais e usam o provedor e a chave que você cadastrar. Veja [PRIVACY.md](PRIVACY.md).
+
+## Licença
+
+[MIT](LICENSE) © 2026 Hendell A. Cardoso. Inclui o FFmpeg (via ffmpeg-static, licença GPL/LGPL), MediaPipe (Apache-2.0) e RNNoise (BSD).
 
 ## Sobre
 

@@ -4,7 +4,7 @@ setlocal
 title Enviar projeto para o GitHub
 cd /d "%~dp0"
 
-set "REPO=https://github.com/hendellacardoso/gravacao-video.git"
+set "REPO=https://github.com/hendellacardoso/RecFlow.git"
 set "BRANCH=main"
 
 echo.
@@ -56,6 +56,12 @@ if errorlevel 1 (
   git remote set-url origin "%REPO%"
 )
 
+REM --- 4b. Workflow do GitHub Actions (gera o instalador em Releases) ---
+if exist "ci\release.yml" (
+  if not exist ".github\workflows" mkdir ".github\workflows"
+  copy /y "ci\release.yml" ".github\workflows\release.yml" >nul
+)
+
 REM --- 5. Adiciona os arquivos (node_modules e dist ficam de fora pelo .gitignore) ---
 git add -A
 git diff --cached --quiet
@@ -96,7 +102,7 @@ if errorlevel 1 goto :fim_erro
 echo.
 echo ==============================================
 echo   Pronto! Projeto enviado:
-echo   https://github.com/hendellacardoso/gravacao-video
+echo   https://github.com/hendellacardoso/RecFlow
 echo ==============================================
 echo.
 pause

@@ -5,11 +5,11 @@
   "description": "RecFlow: gravador de tela para Windows com editor de vídeo",
   "main": "main.js",
   "author": "Hendell A. Cardoso <suporte@api2dev.com.br>",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win --publish never"
   },
   "dependencies": {
     "ffmpeg-static": "^5.3.0",
@@ -45,7 +45,8 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "legalTrademarks": "RecFlow"
     },
     "nsis": {
       "oneClick": false,
@@ -53,7 +54,8 @@
       "shortcutName": "RecFlow",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "artifactName": "RecFlow-Setup.${ext}"
+      "artifactName": "RecFlow-Setup.${ext}",
+      "license": "LICENSE"
     },
     "fileAssociations": [
       {
@@ -64,7 +66,14 @@
         "icon": "assets/icon.ico"
       }
     ],
-    "copyright": "© Hendell A. Cardoso — api2dev.com.br"
+    "copyright": "Copyright © 2026 Hendell A. Cardoso"
   },
-  "homepage": "https://api2dev.com.br"
+  "homepage": "https://github.com/hendellacardoso/RecFlow",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hendellacardoso/RecFlow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hendellacardoso/RecFlow/issues"
+  }
 }

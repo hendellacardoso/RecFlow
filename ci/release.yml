@@ -1,0 +1,92 @@
+# Gera o instalador do Windows e publica em "Releases" do GitHub.
+# Dispara quando uma tag vX.Y.Z é enviada (o publicar-versao.bat faz isso) ou manualmente pela aba Actions.
+# Se o SignPath estiver configurado (variável SIGNPATH_ORGANIZATION_ID e segredo SIGNPATH_API_TOKEN),
+# o instalador é assinado antes de ser publicado; senão, é publicado sem assinatura.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Conferir versão (tag = package.json)
+        id: ver
+        shell: pwsh
+        run: |
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "version=$pkg" >> $env:GITHUB_OUTPUT
+          if (-not '${{ github.ref }}'.StartsWith('refs/tags/v')) { exit 0 }
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          if ($pkg -ne $tag) { Write-Error "A tag ($tag) é diferente da versão do package.json ($pkg)."; exit 1 }
+
+      - name: Instalar dependências
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE) { npm install --no-audit --no-fund }
+
+      - name: Gerar instalador
+        run: npm run dist
+
+      - name: Enviar instalador (sem assinatura) para o SignPath
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: RecFlow-Setup-unsigned
+          path: dist/RecFlow-Setup.exe
+          if-no-files-found: error
+
+      - name: Assinar com SignPath
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'RecFlow' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+          parameters: |
+            version: ${{ toJSON(steps.ver.outputs.version) }}
+
+      - name: Escolher o arquivo final
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          if (Test-Path signed/RecFlow-Setup.exe) { Copy-Item signed/RecFlow-Setup.exe release/ ; "Instalador ASSINADO" }
+          else { Copy-Item dist/RecFlow-Setup.exe release/ ; "Instalador sem assinatura" }
+          $h = (Get-FileHash release/RecFlow-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  RecFlow-Setup.exe" | Out-File -Encoding ascii release/RecFlow-Setup.exe.sha256
+
+      - name: Publicar em Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: RecFlow ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release/RecFlow-Setup.exe
+            release/RecFlow-Setup.exe.sha256
+
+      - name: Guardar o instalador (execução manual)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: RecFlow-Setup
+          path: release/

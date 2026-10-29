@@ -38,7 +38,7 @@ const TRAY_ICON = path.join(__dirname, 'assets', process.platform === 'win32' ? 
 const PRELOAD = path.join(__dirname, 'preload.js');
 const APP_TITLE = 'RecFlow';
 // Links permitidos na tela Sobre
-const ABOUT_LINKS = ['mailto:suporte@api2dev.com.br', 'https://wa.me/5562993148955', 'https://api2dev.com.br'];
+const ABOUT_LINKS = ['mailto:suporte@api2dev.com.br', 'https://wa.me/5562993148955', 'https://api2dev.com.br', 'https://github.com/hendellacardoso/RecFlow', 'https://github.com/hendellacardoso/RecFlow/releases'];
 
 let camWin = null, camDrag = null, camSaveTimer = null;
 let mainWin = null, overlayWin = null, toolbarWin = null, borderWin = null, tray = null;
